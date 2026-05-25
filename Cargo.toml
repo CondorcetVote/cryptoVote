@@ -31,14 +31,14 @@ default = ["cli"]
 cli = ["dep:clap"]
 # Expose the public API to JavaScript via `wasm-bindgen`. Enable when
 # building the browser module with `wasm-pack`.
-wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:getrandom"]
+wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:getrandom", "getrandom/wasm_js"]
 
 [dependencies]
 # Ristretto255 group operations and scalar arithmetic. The local BLSAG
 # implementation needs `digest` for `RistrettoPoint::from_hash`,
 # `rand_core` for scalar / point sampling in signing and tests, and
 # `zeroize` so `SecretKey` can wipe its scalar on drop.
-curve25519-dalek = { version = "4", features = ["digest", "rand_core", "zeroize"] }
+curve25519-dalek = { version = "5.0.0-pre.6", features = ["digest", "rand_core", "zeroize"] }
 
 # Wipe secret scalars when their wrapper leaves scope.
 zeroize = "1"
@@ -46,15 +46,19 @@ zeroize = "1"
 # Hash function (cryptographic core of every challenge in the protocol).
 # Blake2b-512 produces a 64-byte digest natively, which is exactly what
 # curve25519-dalek's `Scalar::from_hash` and `RistrettoPoint::from_hash`
-# consume.
-blake2 = { version = "0.10", default-features = false }
+# consume. The 0.11 release candidate matches curve25519-dalek 5's digest API.
+blake2 = { version = "0.11.0-rc.6", default-features = false }
 
-# `OsRng` is what feeds BLSAG signing; on WebAssembly it delegates to
-# `getrandom` (which itself uses `window.crypto`). We only need the
-# `std` feature — it brings in `OsRng` and `getrandom` transitively.
-# `std_rng` would additionally pull `rand_chacha` for `thread_rng` /
-# `StdRng`, which we do not use.
-rand = { version = "0.8", default-features = false, features = ["std"] }
+# `SysRng` is what feeds BLSAG signing; on WebAssembly it delegates to
+# `getrandom` (which itself uses `Crypto.getRandomValues` when the
+# `wasm` feature enables `getrandom/wasm_js`). We only need the
+# `std` and `sys_rng` features — `std_rng` and `thread_rng` would pull
+# extra generators we do not use.
+rand = { version = "0.10", default-features = false, features = ["std", "sys_rng"] }
+
+# `SysRng` is fallible in rand 0.10; `UnwrapErr` adapts it to the infallible
+# `CryptoRng` interface expected by curve25519-dalek's random constructors.
+rand_core = "0.10"
 
 # Hex encoding for serialising keys / signatures across the CLI and
 # WASM boundaries. Deliberately the only encoding the public API knows
@@ -68,16 +72,11 @@ clap = { version = "4", features = ["derive"], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 js-sys = { version = "0.3", optional = true }
 
-# `getrandom` is what `rand`'s `OsRng` calls into. On wasm32 we need
-# the `js` feature so that randomness comes from `window.crypto`. We
-# also gate this dependency behind the `wasm` feature so the native
-# build stays lean.
-#
-# Pinned to 0.2 on purpose: `rand 0.8` calls `getrandom 0.2`. Bumping
-# to 0.3 or 0.4 would leave a second copy of getrandom in the tree,
-# and the `js` feature would land on the version that `rand` does *not*
-# use — silently breaking the browser RNG.
-getrandom = { version = "0.2", features = ["js"], optional = true }
+# `getrandom` is what `rand`'s `SysRng` calls into. On wasm32-unknown-unknown we
+# enable its `wasm_js` feature so randomness comes from Web Crypto. This is an
+# optional direct dependency only so the `wasm` feature can enable that backend
+# on the same `getrandom` version used by `rand`.
+getrandom = { version = "0.4", optional = true }
 
 # Release profile tuned for small, fast WebAssembly artefacts. `opt-level
 # = "z"` favours code size over speed, which is normally what you want

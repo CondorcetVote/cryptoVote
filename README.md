@@ -21,8 +21,8 @@ three operations and refuses to take part in anything else.
   LSAG/BLSAG equations, with election-scoped key images.
 - **Hash**: Blake2b-512 (`blake2` crate). Natively 64-byte output, fed
   directly into `Scalar::from_hash`.
-- **CSPRNG**: `OsRng`, which on `wasm32` delegates to `Crypto.getRandomValues`
-  through the `getrandom` crate's `js` feature.
+- **CSPRNG**: `SysRng`, which on `wasm32` delegates to `Crypto.getRandomValues`
+  through the `getrandom` crate's `wasm_js` feature.
 
 ## Anti-double-vote contract
 

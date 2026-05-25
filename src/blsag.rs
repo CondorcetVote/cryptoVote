@@ -18,7 +18,8 @@ use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::MultiscalarMul;
-use rand::rngs::OsRng;
+use rand::rngs::SysRng;
+use rand_core::UnwrapErr;
 
 const KEY_IMAGE_DOMAIN: &[u8] = b"crypto_vote:blsag:key-image-point";
 const CHALLENGE_DOMAIN: &[u8] = b"crypto_vote:blsag:challenge";
@@ -41,7 +42,7 @@ pub(crate) fn sign(
     let key_image_base = hash_public_key_to_point(election_id, signer_public_key);
     let key_image = secret_key * key_image_base;
 
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let alpha = Scalar::random(&mut rng);
     let mut responses: Vec<Scalar> = ring.iter().map(|_| Scalar::random(&mut rng)).collect();
     let mut challenges = vec![Scalar::ZERO; ring.len()];
@@ -154,7 +155,7 @@ mod tests {
 
     #[test]
     fn key_image_base_is_scoped_by_election() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let secret_key = Scalar::random(&mut rng);
         let public_key = secret_key * RISTRETTO_BASEPOINT_POINT;
 
@@ -166,7 +167,7 @@ mod tests {
 
     #[test]
     fn round_trip_with_contextual_tag() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let secret_key = Scalar::random(&mut rng);
         let signer_public_key = secret_key * RISTRETTO_BASEPOINT_POINT;
         let ring = vec![

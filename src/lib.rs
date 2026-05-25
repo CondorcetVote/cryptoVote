@@ -66,8 +66,8 @@
 //!   challenge in the BLSAG protocol needs to feed back into a
 //!   Ristretto scalar — and because it is already a standard choice
 //!   for the same algorithm in other projects.
-//! - **CSPRNG**: `OsRng`. On wasm32 it is wired up to
-//!   `Crypto.getRandomValues` via the `getrandom` crate's `js` feature.
+//! - **CSPRNG**: `SysRng`. On wasm32 it is wired up to
+//!   `Crypto.getRandomValues` via the `getrandom` crate's `wasm_js` feature.
 //!
 //! ## Encoding
 //!

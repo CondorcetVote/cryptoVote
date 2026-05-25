@@ -4,20 +4,21 @@
 //! random, plus its derived Ristretto point. The scalar is the secret
 //! key, the point is the public key.
 //!
-//! Randomness comes from [`OsRng`], i.e. the operating-system CSPRNG:
+//! Randomness comes from [`SysRng`], i.e. the operating-system CSPRNG:
 //!
 //!  - on Linux / macOS / Windows that's `getrandom(2)` /
 //!    `getentropy(2)` / `BCryptGenRandom`;
 //!  - in a browser, with the `wasm` feature on, `getrandom` is
 //!    configured (in `Cargo.toml`) to use `Crypto.getRandomValues` via
-//!    its `js` feature.
+//!    its `wasm_js` feature.
 //!
 //! In every case the application code is the same — that is the whole
-//! point of routing through `OsRng`.
+//! point of routing through `SysRng`.
 
 use crate::types::{PublicKey, SecretKey};
 use curve25519_dalek::scalar::Scalar;
-use rand::rngs::OsRng;
+use rand::rngs::SysRng;
+use rand_core::UnwrapErr;
 
 /// A freshly generated voter identity.
 pub struct Identity {
@@ -34,7 +35,7 @@ pub struct Identity {
 /// outputs. There is nothing else to it — every voter holds exactly one
 /// independently sampled identity.
 pub fn generate_identity() -> Identity {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let scalar = Scalar::random(&mut rng);
     let secret_key = SecretKey { scalar };
     let public_key = secret_key.public_key();
@@ -50,7 +51,7 @@ mod tests {
 
     #[test]
     fn two_identities_are_different() {
-        // OsRng is supposed to be uniform; getting the same key twice
+        // SysRng is supposed to be uniform; getting the same key twice
         // would mean either a catastrophic bug or the heat-death of the
         // universe.
         let a = generate_identity();

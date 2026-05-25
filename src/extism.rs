@@ -36,6 +36,7 @@
 use crate::types::{KeyImage, PublicKey, SecretKey, Signature};
 use extism_pdk::{FnResult, Json, plugin_fn};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 #[derive(Serialize)]
 pub struct IdentityOut {
@@ -73,7 +74,15 @@ pub struct SignOut {
 
 #[plugin_fn]
 pub fn sign_vote(Json(input): Json<SignIn>) -> FnResult<Json<SignOut>> {
-    let sk = SecretKey::from_hex(&input.secret)?;
+    // Partial-move the secret hex String out of the input struct into
+    // a `Zeroizing` wrapper so its heap allocation is overwritten when
+    // this function returns. This is the most we can clean up from
+    // inside the plugin — the JSON parser's intermediate buffers and
+    // the Extism PDK's input buffer in WASM linear memory are not
+    // under our control. Other fields (`vote`, `election_id`, `ring`)
+    // are public and don't need this treatment.
+    let secret = Zeroizing::new(input.secret);
+    let sk = SecretKey::from_hex(&secret)?;
     let vote_bytes = hex::decode(&input.vote)?;
     let ring: Vec<PublicKey> = input
         .ring

@@ -500,19 +500,47 @@ same calls, regardless of the host language. Build it with
 `--features extism --target wasm32-wasip1` (see the build matrix
 above); WASI provides the RNG, no extra wiring required.
 
-When to pick the Extism flavour over the [wasm-bindgen
-flavour](#using-from-javascript--webassembly) :
+### Recommended split: pick the right flavour per role
 
-- ✅ You want the same plugin loadable from multiple host languages
-  (e.g. a Node.js verifier *and* a Python verifier and a Go verifier).
-- ✅ You want sandboxing semantics provided by the host (the plugin
-  cannot read disk, env, or network unless explicitly granted).
-- ❌ You need the absolute lowest call overhead in the browser — the
-  wasm-bindgen path is direct, the Extism path goes through JSON
-  encoding on every call.
-- ❌ You care about wiping the JS-side copy of the secret with
-  `.fill(0)` — Extism passes the secret as a hex string inside a JSON
-  buffer, which the JS host SDK does not let you overwrite.
+The two flavours are **not interchangeable** for secret-handling code.
+The architectural split that matches their trade-offs:
+
+| Role | Flavour | Why |
+|---|---|---|
+| **Voter device** (browser, signs ballots) | wasm-bindgen | Secret is exposed as a mutable `Uint8Array` that the JS caller can `.fill(0)`. Every Rust-side temporary is `Zeroizing`-wrapped. This is the only flavour built around memory hygiene for the secret. |
+| **Verifier** (server, mobile app, audit tool, CLI tooling, …) | **Extism** | Verification never touches a secret — `verify_vote` only handles public bytes (signature, key image, ring, ballot). One binary supports verifiers written in any host language. |
+
+The Extism flavour *can* technically run `sign_vote` and
+`generate_identity`, but doing so on a voter device degrades secret
+hygiene compared to wasm-bindgen — see the next subsection. For
+verifiers and non-secret-handling tooling, the Extism flavour is the
+right default.
+
+### Secret-hygiene trade-off vs wasm-bindgen
+
+Going through JSON means the secret key transits as a hex string in
+the plugin's input/output buffer. Three protections that the
+wasm-bindgen flavour provides are weakened or lost:
+
+- The **Rust-side intermediate `String`** holding the parsed secret
+  *is* wrapped in `Zeroizing` (its heap allocation is overwritten when
+  `sign_vote` returns). However the JSON parser's internal buffers and
+  the Extism PDK's input buffer in WASM linear memory are not under
+  our control.
+- The **JS-side `String`** holding the secret is **immutable** — the
+  host cannot call `.fill(0)` on it. It lives until V8 garbage-collects
+  it (no guaranteed timing).
+- The **Extism input/output buffers** in WASM linear memory may
+  persist between plugin calls (Extism re-uses the instance), so the
+  secret bytes can linger across calls until a future allocation
+  overwrites the region.
+
+Net effect: the Extism flavour reduces *post-hoc* memory hygiene
+(core dumps, devtools snapshots taken later, swap to disk, periodic
+memory scans). It does **not** change the *live* attack surface — a
+script running in the same context while the secret is in memory can
+read it under both flavours. If your threat model prioritises the
+post-hoc class, sign on a voter device with the wasm-bindgen flavour.
 
 ### Plugin function signatures
 
@@ -527,6 +555,13 @@ arbitrary binary in there; the library treats it opaquely. Hex was
 picked over base64 for consistency with the rest of the public API.
 
 ### Browser example
+
+> The browser snippet below exercises all three plugin functions for
+> completeness, but in a real deployment a voter device should sign
+> with the [wasm-bindgen flavour](#using-from-javascript--webassembly)
+> for better secret hygiene. The Extism flavour in the browser is
+> idiomatic for *verifier* roles: audit pages, results dashboards,
+> mobile webview verifiers, etc.
 
 ```js
 // One-time install:  npm install @extism/extism

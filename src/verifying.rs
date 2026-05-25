@@ -240,8 +240,20 @@ mod tests {
     fn empty_inputs_at_verification_are_rejected() {
         let (sk, ring) = fresh_ring(3);
         let proof = sign_vote(&sk, b"yes", EID, &ring).unwrap();
-        assert!(!verify_vote(b"", EID, &proof.signature, &proof.key_image, &ring));
-        assert!(!verify_vote(b"yes", "", &proof.signature, &proof.key_image, &ring));
+        assert!(!verify_vote(
+            b"",
+            EID,
+            &proof.signature,
+            &proof.key_image,
+            &ring
+        ));
+        assert!(!verify_vote(
+            b"yes",
+            "",
+            &proof.signature,
+            &proof.key_image,
+            &ring
+        ));
     }
 
     #[test]

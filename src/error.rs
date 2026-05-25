@@ -76,9 +76,7 @@ impl fmt::Display for Error {
             Error::SignerNotInRing => {
                 f.write_str("signer's public key is not part of the authorised ring")
             }
-            Error::RingTooSmall => {
-                f.write_str("authorised ring must contain at least two members")
-            }
+            Error::RingTooSmall => f.write_str("authorised ring must contain at least two members"),
             Error::DuplicateRingMember => {
                 f.write_str("authorised ring contains a duplicate public key")
             }

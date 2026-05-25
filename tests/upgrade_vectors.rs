@@ -23,15 +23,13 @@
 
 use crypto_vote::{KeyImage, PublicKey, SecretKey, Signature, sign_vote, verify_vote};
 
-const SIGNER_SK_HEX: &str =
-    "0100000000000000000000000000000000000000000000000000000000000000";
+const SIGNER_SK_HEX: &str = "0100000000000000000000000000000000000000000000000000000000000000";
 const RING_HEX: [&str; 3] = [
     "e2f2ae0a6abc4e71a884a961c500515f58e30b6aa582dd8db6a65945e08d2d76",
     "6a493210f7499cd17fecb510ae0cea23a110e8d5b901f8acadd3095c73a3b919",
     "94741f5d5d52755ece4f23f044ee27d5d1ea1e2bd196b462166b16152a9d0259",
 ];
-const KEY_IMAGE_HEX: &str =
-    "c6d77f893b5a01a5e995be5a568e55bb22f3931ee686f24e5d211bee967ec66d";
+const KEY_IMAGE_HEX: &str = "c6d77f893b5a01a5e995be5a568e55bb22f3931ee686f24e5d211bee967ec66d";
 const SIGNATURE_HEX: &str = "f74eff0c1be85da6ce4b68d1b4f5c1fb0b1ab976a861e93c7ab799ba51030f02ef0090fd02e244dd56d2b80248577a35315cb51dcada20f66b5a14747e27030f42bd8fdeec4cef9c916aeeab40222697ebb18b48e193bd7b304963de91f493096139b44bd6e7bb65363c32c79371e04dc7c9d1c350210f337ade9eab895aa80a";
 const VOTE: &[u8] = b"option-A";
 const ELECTION_ID: &str = "upgrade-vector-1";
@@ -92,6 +90,18 @@ fn frozen_signature_rejects_when_inputs_diverge() {
     let signature = Signature::from_hex(SIGNATURE_HEX, ring.len()).unwrap();
     let key_image = KeyImage::from_hex(KEY_IMAGE_HEX).unwrap();
 
-    assert!(!verify_vote(b"option-B", ELECTION_ID, &signature, &key_image, &ring));
-    assert!(!verify_vote(VOTE, "other-election", &signature, &key_image, &ring));
+    assert!(!verify_vote(
+        b"option-B",
+        ELECTION_ID,
+        &signature,
+        &key_image,
+        &ring
+    ));
+    assert!(!verify_vote(
+        VOTE,
+        "other-election",
+        &signature,
+        &key_image,
+        &ring
+    ));
 }

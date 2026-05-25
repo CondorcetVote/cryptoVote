@@ -19,7 +19,9 @@
 //! you can keep comments alongside the authorised list.
 
 use clap::{Parser, Subcommand};
-use crypto_vote::{KeyImage, PublicKey, SecretKey, Signature, generate_identity, sign_vote, verify_vote};
+use crypto_vote::{
+    KeyImage, PublicKey, SecretKey, Signature, generate_identity, sign_vote, verify_vote,
+};
 use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;

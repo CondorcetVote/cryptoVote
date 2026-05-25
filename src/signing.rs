@@ -132,12 +132,8 @@ pub fn sign_vote(
     // 5. Hand off to nazgul. `Blake2b512` is wired in here as the
     //    `Hash` generic, so every challenge the protocol computes goes
     //    through Blake2b-512.
-    let blsag = BLSAG::sign::<Blake2b512, OsRng>(
-        secret_key.scalar,
-        decoy_ring,
-        secret_index,
-        &bound,
-    );
+    let blsag =
+        BLSAG::sign::<Blake2b512, OsRng>(secret_key.scalar, decoy_ring, secret_index, &bound);
 
     // 5. Repackage into our public types. We drop nazgul's `ring` field
     //    on purpose: the verifier reconstructs it from its own copy of
@@ -234,8 +230,7 @@ mod tests {
     fn rejects_empty_vote() {
         let voter = generate_identity();
         let other = generate_identity().public_key;
-        let err =
-            sign_vote(&voter.secret_key, b"", EID, &[voter.public_key, other]).unwrap_err();
+        let err = sign_vote(&voter.secret_key, b"", EID, &[voter.public_key, other]).unwrap_err();
         assert_eq!(err, Error::EmptyVote);
     }
 
@@ -243,8 +238,7 @@ mod tests {
     fn rejects_empty_election_id() {
         let voter = generate_identity();
         let other = generate_identity().public_key;
-        let err =
-            sign_vote(&voter.secret_key, b"yes", "", &[voter.public_key, other]).unwrap_err();
+        let err = sign_vote(&voter.secret_key, b"yes", "", &[voter.public_key, other]).unwrap_err();
         assert_eq!(err, Error::EmptyElectionId);
     }
 

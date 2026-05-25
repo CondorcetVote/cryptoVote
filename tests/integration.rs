@@ -105,8 +105,14 @@ fn anonymity_is_indistinguishable_by_index() {
     let p_b = sign_vote(&voter_b.secret_key, b"yes", EID, &ring).unwrap();
     let p_c = sign_vote(&voter_c.secret_key, b"yes", EID, &ring).unwrap();
 
-    assert_eq!(p_a.signature.to_bytes().len(), p_b.signature.to_bytes().len());
-    assert_eq!(p_b.signature.to_bytes().len(), p_c.signature.to_bytes().len());
+    assert_eq!(
+        p_a.signature.to_bytes().len(),
+        p_b.signature.to_bytes().len()
+    );
+    assert_eq!(
+        p_b.signature.to_bytes().len(),
+        p_c.signature.to_bytes().len()
+    );
 }
 
 #[test]

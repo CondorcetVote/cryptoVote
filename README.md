@@ -117,6 +117,92 @@ verify each ballot (or at least the election's frozen ring) alongside
 the ballot itself, so audits later on can rerun `verify_vote`
 deterministically.
 
+## Build matrix
+
+The release workflow produces four artefacts. The same commands work
+locally — pick the row that matches what you actually need.
+
+| Target | Use case | Toolchain prerequisite |
+|---|---|---|
+| `x86_64-unknown-linux-gnu` | Native x64 Linux CLI | `rustup target add x86_64-unknown-linux-gnu` (default on Linux) |
+| `aarch64-unknown-linux-gnu` | Native ARM64 / ARMv9 Linux CLI | `rustup target add aarch64-unknown-linux-gnu` + cross linker `gcc-aarch64-linux-gnu` |
+| `wasm32-unknown-unknown` (via `wasm-pack`) | Browser ES module | `rustup target add wasm32-unknown-unknown` + `cargo install wasm-pack` |
+| `wasm32-wasip1` | Server-side WASM (wasmtime, wasmer, …) | `rustup target add wasm32-wasip1` |
+
+The crate uses Rust edition 2024 (implicit toolchain floor: 1.85). CI
+tracks `stable`; no stricter MSRV is advertised because it would be an
+unverified promise.
+
+### Native x86_64 Linux CLI
+
+```bash
+cargo build --release --locked \
+    --target x86_64-unknown-linux-gnu --bin cryptovote
+# → target/x86_64-unknown-linux-gnu/release/cryptovote
+```
+
+### Native ARM64 Linux CLI
+
+ARMv9-A cores (Cortex-A510, A710, A720, X1+ …) are 64-bit ARM and use
+the AArch64 ISA, so this is also the right target for "native ARMv9"
+— there is no separate Rust triple for ARMv9 because ARMv9-A *is*
+AArch64.
+
+```bash
+# Install the cross-linker once.
+sudo apt-get install -y gcc-aarch64-linux-gnu
+
+# Build, telling Cargo which linker to use for the target triple.
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+cargo build --release --locked \
+    --target aarch64-unknown-linux-gnu --bin cryptovote
+# → target/aarch64-unknown-linux-gnu/release/cryptovote
+```
+
+### Browser WASM (`wasm32-unknown-unknown` via `wasm-pack`)
+
+```bash
+wasm-pack build \
+    --release \
+    --target web \
+    --out-dir pkg-browser \
+    -- \
+    --no-default-features \
+    --features wasm \
+    --locked
+# → pkg-browser/{crypto_vote.js, crypto_vote_bg.wasm, ...}
+```
+
+`--target web` emits ES-module glue suitable for `import` from a
+static page. Replace by `--target bundler` for Webpack / Vite — the
+exported function signatures are identical.
+
+`--no-default-features` drops the `cli` feature so `clap` and the
+binary entry point are not pulled into the WASM bundle.
+`--features wasm` enables `wasm-bindgen`, `js-sys`, and the
+`getrandom/wasm_js` backend so randomness comes from
+`Crypto.getRandomValues`.
+
+### Server-side WASM (`wasm32-wasip1`)
+
+```bash
+cargo build --release --locked \
+    --target wasm32-wasip1 --lib --no-default-features
+# → target/wasm32-wasip1/release/crypto_vote.wasm
+```
+
+Important: the `wasm` feature is **off** here — the WASI build needs
+neither `wasm-bindgen` nor the browser-specific `getrandom` backend.
+On `wasm32-wasip1`, `getrandom` falls back automatically to WASI's
+`random_get`, so `SysRng` (used by `sign_vote` and
+`generate_identity`) works out of the box. The resulting `.wasm` is a
+plain WASI module any compliant runtime (wasmtime, wasmer, …) can
+load and call into.
+
+`wasm64-unknown-unknown` is a Tier 3 nightly-only target and several
+transitive dependencies do not yet advertise wasm64 support, which is
+why `wasm32-wasip1` is the documented server-side option.
+
 ## Using the library
 
 ```rust
@@ -230,6 +316,10 @@ setups (Webpack, Vite, …) build with `--target bundler` instead — the
 function signatures are identical, only the import boilerplate changes.
 
 ### Build
+
+See the [Browser WASM](#browser-wasm-wasm32-unknown-unknown-via-wasm-pack)
+row in the build matrix above for the full command and flag breakdown.
+The short version, run from the crate root, is:
 
 ```bash
 wasm-pack build --target web -- --no-default-features --features wasm

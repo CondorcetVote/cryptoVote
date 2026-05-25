@@ -1,6 +1,9 @@
 [package]
 name = "crypto_vote"
 version = "0.1.0"
+# Edition 2024 implies a floor of Rust 1.85; we do not pin `rust-version`
+# explicitly because CI only tests against `stable`, so a stricter MSRV
+# would be an unverified promise.
 edition = "2024"
 description = "An agnostic cryptographic oracle for verifiable voting using linkable ring signatures (BLSAG) over Ristretto255, with Blake2b-512 as the hash function."
 license = "AGPL-3.0-or-later"

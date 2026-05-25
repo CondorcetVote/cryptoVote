@@ -1,0 +1,29 @@
+# Cargo build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# WebAssembly build output
+/pkg/
+/wasm-pack.log
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local environment overrides
+.env
+.env.local
+*.local
+
+# Test / coverage artefacts
+/coverage/
+tarpaulin-report.html
+*.profraw
+
+# Generated documentation
+/doc/

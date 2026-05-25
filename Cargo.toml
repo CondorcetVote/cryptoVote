@@ -1,0 +1,83 @@
+[package]
+name = "crypto_vote"
+version = "0.1.0"
+edition = "2024"
+description = "An agnostic cryptographic oracle for verifiable voting using linkable ring signatures (BLSAG) over Ristretto255, with Blake2b-512 as the hash function."
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["voting", "cryptography", "ring-signature", "blsag", "blake2"]
+categories = ["cryptography", "wasm"]
+
+# A `cdylib` target lets `wasm-pack` produce a browser-ready WebAssembly
+# module, while `rlib` keeps the crate usable as a regular Rust dependency
+# (and as the base for the CLI binary).
+[lib]
+name = "crypto_vote"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "cryptovote"
+path = "src/main.rs"
+# Skip the binary when the `cli` feature is off, so `cargo build
+# --no-default-features --features wasm` does not try to pull in clap
+# and write a `main` function into a WebAssembly module.
+required-features = ["cli"]
+
+[features]
+# `default` is what you get with `cargo build`. We keep WASM bindings off
+# by default so a plain native build does not pull in `wasm-bindgen`.
+default = ["cli"]
+# Build the command-line interface. Disable when targeting WebAssembly.
+cli = ["dep:clap"]
+# Expose the public API to JavaScript via `wasm-bindgen`. Enable when
+# building the browser module with `wasm-pack`.
+wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:getrandom"]
+
+[dependencies]
+# Linkable ring signatures (BLSAG / CLSAG / MLSAG) on Ristretto255.
+nazgul = { version = "2.1", default-features = false, features = ["std"] }
+
+# Curve types re-exported by nazgul. Pinned to the same major version it
+# uses so `Scalar` and `RistrettoPoint` are the same types end-to-end.
+curve25519-dalek = { version = "4", features = ["digest", "rand_core"] }
+
+# Hash function (cryptographic core of every challenge in the protocol).
+# Blake2b-512 produces a 64-byte digest natively, which is exactly what
+# nazgul / curve25519-dalek's `Scalar::from_hash` consume.
+blake2 = { version = "0.10", default-features = false }
+
+# CSPRNG abstractions. `OsRng` is what feeds nazgul; on WebAssembly it
+# delegates to `getrandom` (which itself uses `window.crypto`).
+rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
+rand_core = { version = "0.6", default-features = false }
+
+# Hex encoding for serialising keys / signatures across the CLI and WASM
+# boundaries. Deliberately the only encoding the public API knows about,
+# so we never have to decide between base64/base58/etc.
+hex = { version = "0.4", default-features = false, features = ["std"] }
+
+# CLI dependency, only pulled in when the `cli` feature is on.
+clap = { version = "4", features = ["derive"], optional = true }
+
+# WebAssembly bindings, only pulled in when the `wasm` feature is on.
+wasm-bindgen = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }
+
+# `getrandom` is what `rand`'s `OsRng` calls into. On wasm32 we need the
+# `js` feature so that randomness comes from `window.crypto`. We also gate
+# this dependency behind the `wasm` feature so the native build stays lean.
+getrandom = { version = "0.2", features = ["js"], optional = true }
+
+[dev-dependencies]
+hex = "0.4"
+
+# Release profile tuned for small, fast WebAssembly artefacts. `opt-level
+# = "z"` favours code size over speed, which is normally what you want
+# inside a browser bundle. The CLI build picks the same profile, but its
+# binary is small enough that the difference is negligible.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

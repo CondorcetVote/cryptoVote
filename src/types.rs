@@ -85,7 +85,11 @@ impl PublicKey {
 /// Internally a Ristretto255 scalar; externally 32 bytes. Treat the
 /// encoded form with the same care as any other private key — it should
 /// never be transmitted off the voter's device.
-#[derive(Clone)]
+///
+/// `SecretKey` is intentionally **not** `Clone`. Every copy of a secret
+/// scalar is one more memory region to keep track of and zeroise; if a
+/// caller really needs to duplicate one, they should re-decode it from
+/// the same byte representation and accept the duplication explicitly.
 pub struct SecretKey {
     pub(crate) scalar: Scalar,
 }

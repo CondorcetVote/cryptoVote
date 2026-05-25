@@ -24,12 +24,15 @@
 //!
 //! ## Election binding
 //!
-//! Every signature is bound to an `election_id` byte string. The bytes
-//! that actually go through Blake2b are
+//! Every signature is bound to an `election_id` byte string. Before
+//! hashing, the identifier is normalised to Unicode NFC so the same
+//! logical ID spelled in different Unicode forms (NFC on the server,
+//! NFD pasted from an editor, …) hashes identically on both sides.
+//! The bytes that actually go through Blake2b are
 //!
 //! ```text
-//!   len(election_id) (8 bytes, big-endian)
-//!   election_id
+//!   len(election_id_nfc) (8 bytes, big-endian)
+//!   election_id_nfc
 //!   vote
 //! ```
 //!
@@ -43,6 +46,7 @@
 use crate::error::{Error, Result};
 use crate::types::{KeyImage, PublicKey, SecretKey, Signature, VoteProof};
 use curve25519_dalek::ristretto::RistrettoPoint;
+use unicode_normalization::UnicodeNormalization;
 
 /// Operation B: produce the signed proof for a ballot.
 ///
@@ -86,10 +90,14 @@ pub fn sign_vote(
     if election_id.is_empty() {
         return Err(Error::EmptyElectionId);
     }
-    // Strings are bytes from here on. We commit to UTF-8 at the API
-    // boundary; whatever the caller passed verbatim is what gets
-    // hashed.
-    let election_id = election_id.as_bytes();
+    // Normalise the election identifier to Unicode NFC before it ever
+    // touches the hash chain. Without this, the same logical ID spelled
+    // in two different Unicode forms (NFC on the server, NFD pasted
+    // from an editor, …) would produce different bytes and every
+    // signature would silently fail to verify. NFC is the canonical
+    // form used by IRIs and most web APIs, so it is the safe default.
+    let normalized = normalise_election_id(election_id);
+    let election_id = normalized.as_bytes();
 
     // 1. Validate and canonicalise the ring.
     //
@@ -155,6 +163,15 @@ pub(crate) fn bind_to_election(election_id: &[u8], vote: &[u8]) -> Vec<u8> {
     out.extend_from_slice(election_id);
     out.extend_from_slice(vote);
     out
+}
+
+/// Normalise an `election_id` string to Unicode NFC.
+///
+/// Pulled out so [`crate::verifying::verify_vote`] applies exactly the
+/// same transformation. NFC is idempotent and ASCII-stable, so callers
+/// that pass plain ASCII (UUIDs, slugs, …) pay no cost.
+pub(crate) fn normalise_election_id(election_id: &str) -> String {
+    election_id.nfc().collect()
 }
 
 /// Sort the ring, check it is well-formed, and reject pathological inputs.
@@ -228,6 +245,32 @@ mod tests {
         let other = generate_identity().public_key;
         let err = sign_vote(&voter.secret_key, b"yes", "", &[voter.public_key, other]).unwrap_err();
         assert_eq!(err, Error::EmptyElectionId);
+    }
+
+    #[test]
+    fn election_id_is_normalised_to_nfc() {
+        // U+00E9 (LATIN SMALL LETTER E WITH ACUTE, NFC) vs
+        // U+0065 U+0301 (e + COMBINING ACUTE, NFD). Two byte-strings,
+        // same logical identifier. After normalisation they must hash
+        // identically, so a signature produced under one form verifies
+        // under the other.
+        let nfc = "élection-2026";
+        let nfd = "e\u{0301}lection-2026";
+        assert_ne!(nfc.as_bytes(), nfd.as_bytes());
+        assert_eq!(normalise_election_id(nfc), normalise_election_id(nfd));
+
+        let voter = generate_identity();
+        let other = generate_identity().public_key;
+        let ring = vec![voter.public_key, other];
+
+        let proof = sign_vote(&voter.secret_key, b"yes", nfd, &ring).unwrap();
+        assert!(crate::verify_vote(
+            b"yes",
+            nfc,
+            &proof.signature,
+            &proof.key_image,
+            &ring,
+        ));
     }
 
     #[test]

@@ -19,7 +19,7 @@
 //!    ring *is* "allowed to vote", and any further policy belongs to
 //!    the host.
 
-use crate::signing::{bind_to_election, canonicalised_ring};
+use crate::signing::{bind_to_election, canonicalised_ring, normalise_election_id};
 use crate::types::{KeyImage, PublicKey, Signature};
 use curve25519_dalek::ristretto::RistrettoPoint;
 
@@ -61,7 +61,11 @@ pub fn verify_vote(
     if vote.is_empty() || election_id.is_empty() {
         return false;
     }
-    let election_id = election_id.as_bytes();
+    // Mirror signing's NFC normalisation. Doing it on both sides means
+    // the caller's choice of Unicode form for the same logical
+    // identifier no longer drives the signature's validity.
+    let normalized = normalise_election_id(election_id);
+    let election_id = normalized.as_bytes();
 
     // 1. Sort the ring exactly like signing did. Any ring that signing
     //    would refuse (too small, duplicate keys) we refuse too.

@@ -57,6 +57,30 @@ This gives two election-context checks:
 - The **signature** itself only validates against the `election_id`
   it was produced with.
 
+### Ring size and the anonymity set
+
+The cryptography guarantees the verifier cannot tell **which** member of
+the ring produced a given signature — but the anonymity set is exactly
+the ring. A ring of size *n* gives a `1/n` chance of guessing the signer
+uniformly at random, and **no more**:
+
+- **n = 2**: the protocol still validates, but the "anonymity" is
+  binary — every ballot leaks down to "voter A or voter B". The
+  library accepts it because cryptographically it is sound, not
+  because it is privacy-meaningful. Treat it as a debugging
+  configuration, not a production one.
+- **n < 8**: real-world side-channels (registration order, login
+  timing, IP correlation on the host) usually let an observer narrow
+  the set further. Treat anything below 8 as practically
+  de-anonymising.
+- **n ≥ 16**: a reasonable floor for a real ballot. Larger rings cost
+  more (`O(n)` for both signing and verification, plus signature size
+  of `32 * (1 + n)` bytes), so pick the largest ring your latency
+  budget allows.
+
+The minimal `n = 2` floor is enforced inside the library; **picking a
+useful n is the host's responsibility**.
+
 ### Ring lifecycle: freeze before voting opens
 
 The full set of authorised public keys (the "ring") is mixed into the
@@ -327,9 +351,25 @@ cargo test
 ```
 
 Tests cover round-trips, same-election deterministic tags,
-cross-election tag separation, ring-order independence, and every
-documented "invalid" case (tampered vote, tampered signature, swapped
-tag, wrong ring, malformed inputs).
+cross-election tag separation, ring-order independence, bit-level
+malleability resistance on both the signature and the key image, and
+every documented "invalid" case (tampered vote, tampered signature,
+swapped tag, wrong ring, subset/superset ring, malformed inputs).
+
+### Fuzzing
+
+A `cargo-fuzz` harness lives in [`fuzz/`](fuzz/) with four targets:
+
+```bash
+cargo install cargo-fuzz   # one-off
+cargo +nightly fuzz run verify_vote      # parse + verify pipeline
+cargo +nightly fuzz run parse_signature  # Signature::from_bytes
+cargo +nightly fuzz run parse_keys       # PublicKey / SecretKey / KeyImage
+cargo +nightly fuzz run roundtrip        # sign → verify differential
+```
+
+The `fuzz/` package is excluded from the main workspace so it does
+not affect stable builds.
 
 ## Layout
 

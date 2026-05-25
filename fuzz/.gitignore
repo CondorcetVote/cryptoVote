@@ -1,0 +1,8 @@
+# cargo-fuzz produces a separate build tree, corpus, and crash artefacts.
+# None of them belong in the repository — corpora live in CI caches, and
+# crash inputs are turned into regression tests inside `tests/` once
+# minimised.
+target
+corpus
+artifacts
+coverage

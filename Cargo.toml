@@ -65,6 +65,15 @@ rand_core = "0.10"
 # about, so we never have to decide between base64/base58/etc.
 hex = "0.4"
 
+# Unicode NFC normalisation applied to every `election_id` before it is
+# hashed. This neutralises a footgun where the host and the voter spell
+# the same identifier with different Unicode forms (NFC on the server,
+# NFD pasted from an editor, etc.): without normalisation the two
+# byte-strings hash differently and every signature for the election
+# silently fails to verify. We commit to NFC explicitly on both sides so
+# the question never reaches the caller.
+unicode-normalization = "0.1"
+
 # CLI dependency, only pulled in when the `cli` feature is on.
 clap = { version = "4", features = ["derive"], optional = true }
 
@@ -88,3 +97,12 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# Treat the `fuzz/` directory as a separate package: cargo-fuzz needs
+# nightly + `libfuzzer-sys`, neither of which should leak into the
+# default `cargo build` graph. The fuzz package has its own
+# `Cargo.toml`; we just declare an empty workspace here to anchor it
+# and tell cargo not to pull `fuzz/` in.
+[workspace]
+members = []
+exclude = ["fuzz"]

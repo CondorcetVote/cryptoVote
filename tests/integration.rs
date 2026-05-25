@@ -155,3 +155,184 @@ fn invalid_hex_inputs_are_rejected_cleanly() {
         Error::InvalidLength { .. }
     ));
 }
+
+/// Flipping a single bit *anywhere* in the signature must invalidate it.
+///
+/// This is the strongest cheap malleability assertion we can make
+/// without a formal model: the BLSAG construction is a hash chain over
+/// every response, so changing any byte must propagate. If a region of
+/// the signature were silently ignored at verification, an attacker
+/// could re-broadcast a "different" proof with the same effect — this
+/// test would catch that regression.
+#[test]
+fn signature_is_bit_malleability_resistant() {
+    let (sk, ring) = fresh_election(3);
+    let proof = sign_vote(&sk, b"option-A", EID, &ring).unwrap();
+
+    let original = proof.signature.to_bytes();
+    for byte_index in 0..original.len() {
+        for bit in 0..8u8 {
+            let mut tampered = original.clone();
+            tampered[byte_index] ^= 1 << bit;
+
+            // Parsing may already reject (the tampered byte falls in a
+            // scalar that no longer reduces canonically). Either outcome
+            // is fine — what we forbid is "parses *and* verifies".
+            if let Ok(sig) = Signature::from_bytes(&tampered, ring.len()) {
+                assert!(
+                    !verify_vote(b"option-A", EID, &sig, &proof.key_image, &ring),
+                    "tampered signature accepted at byte {byte_index} bit {bit}"
+                );
+            }
+        }
+    }
+}
+
+/// Flipping a single bit in the key image must invalidate the proof.
+///
+/// `KeyImage::from_bytes` either rejects (not on the curve, or the
+/// identity) or yields a different valid Ristretto point; the latter
+/// must fail BLSAG verification, otherwise an attacker could substitute
+/// a different linking tag for the same ballot and slip past the host's
+/// de-duplication check.
+#[test]
+fn key_image_is_bit_malleability_resistant() {
+    let (sk, ring) = fresh_election(3);
+    let proof = sign_vote(&sk, b"option-A", EID, &ring).unwrap();
+
+    let original = proof.key_image.to_bytes();
+    for byte_index in 0..original.len() {
+        for bit in 0..8u8 {
+            let mut tampered = original;
+            tampered[byte_index] ^= 1 << bit;
+
+            if let Ok(ki) = KeyImage::from_bytes(&tampered) {
+                assert!(
+                    !verify_vote(b"option-A", EID, &proof.signature, &ki, &ring),
+                    "tampered key image accepted at byte {byte_index} bit {bit}"
+                );
+            }
+        }
+    }
+}
+
+/// A random Ristretto point passed as a key image must not validate.
+///
+/// `KeyImage::from_bytes` only checks subgroup membership and rejects
+/// the identity — by design, it cannot tell a "real" linking tag from
+/// an arbitrary curve point. Unforgeability of the BLSAG proof is what
+/// closes that gap. This test makes the property explicit.
+#[test]
+fn random_key_image_is_rejected_by_verifier() {
+    use curve25519_dalek::ristretto::RistrettoPoint;
+    use rand::rngs::SysRng;
+    use rand_core::UnwrapErr;
+
+    let (sk, ring) = fresh_election(3);
+    let proof = sign_vote(&sk, b"option-A", EID, &ring).unwrap();
+
+    // Build a key image that decodes cleanly but is unrelated to any
+    // ring member's secret. Loop on the off-chance the random point is
+    // the identity (statistically impossible, but the type system does
+    // not know that).
+    let mut rng = UnwrapErr(SysRng);
+    let bytes = loop {
+        let p = RistrettoPoint::random(&mut rng);
+        let compressed = p.compress().to_bytes();
+        if KeyImage::from_bytes(&compressed).is_ok() {
+            break compressed;
+        }
+    };
+    let bogus = KeyImage::from_bytes(&bytes).unwrap();
+
+    assert!(!verify_vote(
+        b"option-A",
+        EID,
+        &proof.signature,
+        &bogus,
+        &ring
+    ));
+}
+
+/// Subset / superset rings must be rejected.
+///
+/// Removing or adding a ring member changes the canonical hash chain,
+/// so a signature produced under one ring cannot validate under another.
+/// This is the property that lets the host pin the authorised list and
+/// detect any drift between signing-time and verification-time rings.
+#[test]
+fn signature_does_not_verify_against_subset_or_superset_ring() {
+    let (sk, mut ring) = fresh_election(4);
+    let proof = sign_vote(&sk, b"yes", EID, &ring).unwrap();
+
+    let mut subset = ring.clone();
+    subset.pop();
+    // The signature was generated for a ring of size 4; the parser of
+    // the wire format would already reject it against a ring of size 3,
+    // but the in-memory `verify_vote` path simply returns false because
+    // `responses.len() != sorted.len()`.
+    assert!(!verify_vote(
+        b"yes",
+        EID,
+        &proof.signature,
+        &proof.key_image,
+        &subset
+    ));
+
+    ring.push(generate_identity().public_key);
+    assert!(!verify_vote(
+        b"yes",
+        EID,
+        &proof.signature,
+        &proof.key_image,
+        &ring
+    ));
+}
+
+/// A ring populated by anyone other than the genuine signer must reject
+/// a forged "signature" — i.e. you cannot impersonate a voter by being
+/// in the ring and using *your own* secret while passing *their* key
+/// image.
+#[test]
+fn cannot_impersonate_by_swapping_in_someone_elses_key_image() {
+    let (sk_alice, mut ring) = fresh_election(3);
+    let bob = generate_identity();
+    ring.push(bob.public_key);
+
+    let bob_proof = sign_vote(&bob.secret_key, b"yes", EID, &ring).unwrap();
+    let alice_proof = sign_vote(&sk_alice, b"yes", EID, &ring).unwrap();
+
+    // Alice's signature paired with Bob's key image: rejected.
+    assert!(!verify_vote(
+        b"yes",
+        EID,
+        &alice_proof.signature,
+        &bob_proof.key_image,
+        &ring
+    ));
+    // And the reverse: Bob's signature paired with Alice's key image.
+    assert!(!verify_vote(
+        b"yes",
+        EID,
+        &bob_proof.signature,
+        &alice_proof.key_image,
+        &ring
+    ));
+}
+
+/// Truncated or oversized signature byte payloads must fail to parse.
+#[test]
+fn signature_parser_rejects_truncated_and_oversized_payloads() {
+    let (sk, ring) = fresh_election(3);
+    let proof = sign_vote(&sk, b"yes", EID, &ring).unwrap();
+    let bytes = proof.signature.to_bytes();
+
+    // One byte short.
+    assert!(Signature::from_bytes(&bytes[..bytes.len() - 1], ring.len()).is_err());
+    // One byte too long.
+    let mut padded = bytes.clone();
+    padded.push(0);
+    assert!(Signature::from_bytes(&padded, ring.len()).is_err());
+    // Empty.
+    assert!(Signature::from_bytes(&[], ring.len()).is_err());
+}

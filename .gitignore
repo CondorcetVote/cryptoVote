@@ -27,3 +27,6 @@ tarpaulin-report.html
 
 # Generated documentation
 /doc/
+
+# Temp
+/tmp

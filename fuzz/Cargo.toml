@@ -1,0 +1,49 @@
+# Fuzzing harness for `crypto_vote`. Run with `cargo +nightly fuzz run <target>`.
+#
+# This is a deliberately separate cargo package so the main crate stays
+# stable-Rust and `libfuzzer-sys` (nightly-only) does not leak into the
+# default build graph. The parent `Cargo.toml` excludes this directory.
+
+[package]
+name = "crypto_vote-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+crypto_vote = { path = ".." }
+
+# Each fuzz target is its own binary. `test = false` keeps `cargo test`
+# from trying to build them with the wrong runner.
+
+[[bin]]
+name = "verify_vote"
+path = "fuzz_targets/verify_vote.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_signature"
+path = "fuzz_targets/parse_signature.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_keys"
+path = "fuzz_targets/parse_keys.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "roundtrip"
+path = "fuzz_targets/roundtrip.rs"
+test = false
+doc = false
+bench = false

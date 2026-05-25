@@ -119,7 +119,7 @@ deterministically.
 
 ## Build matrix
 
-The release workflow produces nine artefacts; the same commands work
+The release workflow produces eight artefacts; the same commands work
 locally. Pick the triple/flavour that matches your need, install its
 one-off prerequisite, then run the matching build command. Edition 2024
 implies Rust ≥ 1.85; CI tracks `stable`.
@@ -133,13 +133,7 @@ implies Rust ≥ 1.85; CI tracks `stable`.
 | `riscv64gc-unknown-linux-gnu` | Linux x64 or arm | `gcc-riscv64-linux-gnu` cross-toolchain | dynamic ELF |
 | `aarch64-apple-darwin` | macOS arm (M-series) | Xcode Command Line Tools | Mach-O |
 | `wasm32-unknown-unknown` — wasm-bindgen | any | `cargo install wasm-pack` | ES-module bundle for browsers |
-| `wasm32-wasip1` — plain lib | any | none — uses `rust-lld` | bare WASI module |
 | `wasm32-wasip1` — **Extism plugin** | any | none — uses `rust-lld` | single `.wasm` for every Extism host SDK |
-
-> No `riscv64gc-unknown-linux-musl` row: rustup's bundle for that Tier 2
-> target is missing parts of musl libgcc_s, so `rust-lld` cannot link
-> statically. For a static RISC-V build, use
-> [`cross`](https://github.com/cross-rs/cross) (Docker-based) instead.
 
 > Install commands below are **Debian/Ubuntu** (`apt`); adapt to your
 > distribution (`dnf`, `pacman`, `zypper`, `brew`, …) or use
@@ -187,27 +181,18 @@ switch to `--target bundler` for Webpack/Vite (signatures unchanged).
 `wasm-bindgen`, `js-sys`, and the `getrandom/wasm_js` backend so
 randomness comes from `Crypto.getRandomValues`.
 
-Server-side WASM is a plain library build with **no** features
-enabled — `getrandom` autoselects WASI's `random_get`:
-
-```bash
-cargo build --release --locked --target wasm32-wasip1 --lib --no-default-features
-# → target/wasm32-wasip1/release/crypto_vote.wasm
-```
-
-`wasm64-unknown-unknown` is a Tier 3 nightly-only target with poor
-dep support, which is why `wasm32-wasip1` is the documented
-server-side option.
-
-The Extism flavour is the same target with `--features extism`
-instead of no features:
+Server-side WASM uses the Extism flavour — the same `.wasm` is then
+loadable by every Extism host SDK (browser, Node, Python, Go, Rust, …).
+`getrandom` autoselects WASI's `random_get` on this target, so no extra
+backend wiring is needed:
 
 ```bash
 cargo build --release --locked --target wasm32-wasip1 --lib --no-default-features --features extism
 # → target/wasm32-wasip1/release/crypto_vote.wasm   (~360 KB)
 ```
 
-See [Extism plugin](#extism-plugin) for the JS-side usage.
+See [Extism plugin](#extism-plugin) for the host-side usage from JS,
+Node, and other Extism SDKs.
 
 ## Using the library
 

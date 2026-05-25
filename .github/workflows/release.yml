@@ -14,16 +14,7 @@
 #   5. cryptovote-riscv64gc-unknown-linux-gnu.tar.gz — RISC-V 64 Linux CLI (glibc-linked)
 #   6. cryptovote-aarch64-apple-darwin.tar.gz       — Apple Silicon macOS CLI
 #   7. crypto_vote-wasm-browser.tar.gz              — wasm-pack bundle for browsers (wasm-bindgen)
-#   8. crypto_vote-wasm32-wasip1.tar.gz             — server-side WASM (WASI preview 1)
-#   9. crypto_vote-extism.tar.gz                    — single `.wasm` for every Extism host SDK
-#
-# Not shipped here:
-#   - riscv64gc-unknown-linux-musl: rustup's `rust-std` for this Tier 2
-#     target does not include a complete musl libgcc_s, so a static build
-#     with `rust-lld` fails to link. The workaround is `cross` (Docker)
-#     or a hand-built musl-cross-riscv64 toolchain, neither of which is
-#     worth the CI complexity for this project. The glibc variant covers
-#     practical RISC-V Linux deployments.
+#   8. crypto_vote-extism.tar.gz                    — single `.wasm` for every Extism host SDK
 #
 # Note on item 4: `wasm64-unknown-unknown` is a Tier 3 target requiring
 # nightly Rust, and several transitive dependencies (notably
@@ -192,49 +183,6 @@ jobs:
             crypto_vote-wasm-browser.tar.gz.sha256
           if-no-files-found: error
 
-  build-wasm-server:
-    name: WASM — server (wasm32-wasip1)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust toolchain (wasm32-wasip1)
-        # wasm32-wasip1 is the renamed wasm32-wasi target; it stabilised
-        # in Rust 1.78. Our edition = 2024 requires ≥ 1.85, so we are
-        # comfortably past the rename.
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-wasip1
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: wasm32-wasip1
-
-      - name: Build WASI module
-        # No wasm-bindgen here: this artefact is meant to be loaded by a
-        # server-side wasm runtime (wasmtime, wasmer, …), not by JS. We
-        # build the rlib/cdylib with default features off so neither the
-        # CLI nor wasm-bindgen are pulled in. `getrandom` falls back to
-        # WASI's `random_get` automatically on this target.
-        run: cargo build --release --locked --target wasm32-wasip1 --lib --no-default-features
-
-      - name: Package WASI module
-        run: |
-          STAGING="crypto_vote-wasm32-wasip1"
-          mkdir "$STAGING"
-          cp target/wasm32-wasip1/release/crypto_vote.wasm "$STAGING/"
-          cp README.md "$STAGING/" 2>/dev/null || true
-          tar -czf "${STAGING}.tar.gz" "$STAGING"
-          sha256sum "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: crypto_vote-wasm32-wasip1
-          path: |
-            crypto_vote-wasm32-wasip1.tar.gz
-            crypto_vote-wasm32-wasip1.tar.gz.sha256
-          if-no-files-found: error
-
   build-wasm-extism:
     name: WASM — Extism plugin (wasm32-wasip1)
     runs-on: ubuntu-latest
@@ -284,7 +232,6 @@ jobs:
     needs:
       - build-native
       - build-wasm-browser
-      - build-wasm-server
       - build-wasm-extism
     runs-on: ubuntu-latest
     permissions:

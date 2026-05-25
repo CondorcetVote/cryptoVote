@@ -37,24 +37,32 @@ wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:getrandom"]
 # Linkable ring signatures (BLSAG / CLSAG / MLSAG) on Ristretto255.
 nazgul = { version = "2.1", default-features = false, features = ["std"] }
 
-# Curve types re-exported by nazgul. Pinned to the same major version it
-# uses so `Scalar` and `RistrettoPoint` are the same types end-to-end.
-curve25519-dalek = { version = "4", features = ["digest", "rand_core"] }
+# We use `Scalar`, `RistrettoPoint`, `CompressedRistretto` and the
+# Ristretto base point directly in our code, so the crate must appear
+# as a *direct* dependency (Cargo only puts direct deps in the extern
+# prelude — transitive deps are compiled but cannot be `use`d). The
+# features `digest` / `rand_core` / `alloc` / `zeroize` are already
+# enabled by nazgul's `std` feature and unified by Cargo, so we leave
+# them off here. Pinned to the same major version nazgul uses, so the
+# `Scalar` and `RistrettoPoint` types are the same end-to-end.
+curve25519-dalek = "4"
 
 # Hash function (cryptographic core of every challenge in the protocol).
 # Blake2b-512 produces a 64-byte digest natively, which is exactly what
 # nazgul / curve25519-dalek's `Scalar::from_hash` consume.
 blake2 = { version = "0.10", default-features = false }
 
-# CSPRNG abstractions. `OsRng` is what feeds nazgul; on WebAssembly it
-# delegates to `getrandom` (which itself uses `window.crypto`).
-rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
-rand_core = { version = "0.6", default-features = false }
+# `OsRng` is what feeds nazgul; on WebAssembly it delegates to
+# `getrandom` (which itself uses `window.crypto`). We only need the
+# `std` feature — it brings in `OsRng` and `getrandom` transitively.
+# `std_rng` would additionally pull `rand_chacha` for `thread_rng` /
+# `StdRng`, which we do not use.
+rand = { version = "0.8", default-features = false, features = ["std"] }
 
-# Hex encoding for serialising keys / signatures across the CLI and WASM
-# boundaries. Deliberately the only encoding the public API knows about,
-# so we never have to decide between base64/base58/etc.
-hex = { version = "0.4", default-features = false, features = ["std"] }
+# Hex encoding for serialising keys / signatures across the CLI and
+# WASM boundaries. Deliberately the only encoding the public API knows
+# about, so we never have to decide between base64/base58/etc.
+hex = "0.4"
 
 # CLI dependency, only pulled in when the `cli` feature is on.
 clap = { version = "4", features = ["derive"], optional = true }
@@ -67,9 +75,6 @@ js-sys = { version = "0.3", optional = true }
 # `js` feature so that randomness comes from `window.crypto`. We also gate
 # this dependency behind the `wasm` feature so the native build stays lean.
 getrandom = { version = "0.2", features = ["js"], optional = true }
-
-[dev-dependencies]
-hex = "0.4"
 
 # Release profile tuned for small, fast WebAssembly artefacts. `opt-level
 # = "z"` favours code size over speed, which is normally what you want

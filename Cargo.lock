@@ -159,7 +159,6 @@ dependencies = [
  "js-sys",
  "nazgul",
  "rand",
- "rand_core",
  "wasm-bindgen",
 ]
 

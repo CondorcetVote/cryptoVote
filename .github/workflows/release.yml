@@ -1,0 +1,229 @@
+# Release pipeline — builds the four distributable artefacts and
+# attaches them to a GitHub Release.
+#
+# Triggered by pushing an annotated tag of the form `vX.Y.Z`. Manual
+# dispatch is also supported so a maintainer can dry-run the matrix
+# without cutting a tag.
+#
+# Artefacts produced:
+#
+#   1. cryptovote-x86_64-unknown-linux-gnu.tar.gz   — native x64 Linux CLI
+#   2. cryptovote-aarch64-unknown-linux-gnu.tar.gz  — native ARM64 / ARMv9 Linux CLI
+#   3. crypto_vote-wasm-browser.tar.gz              — wasm-pack bundle for browsers
+#   4. crypto_vote-wasm32-wasip1.tar.gz             — server-side WASM (WASI preview 1)
+#
+# Note on item 4: `wasm64-unknown-unknown` is a Tier 3 target requiring
+# nightly Rust, and several transitive dependencies (notably
+# `curve25519-dalek` and `rand`) do not currently advertise wasm64
+# support. We therefore ship `wasm32-wasip1` as the documented fallback,
+# matching the user's "ou wasm32 si les dépendances ne le gèrent pas".
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-native:
+    name: Native — ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't cancel the ARM build when x86 fails (or vice versa); we
+      # want to see every breakage in one CI run.
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            cross_apt: ""
+            linker: ""
+          - target: aarch64-unknown-linux-gnu
+            # GitHub-hosted x86 runners can produce ARM64 binaries via
+            # the standard gcc cross-compiler — no QEMU, no `cross`. We
+            # tell Cargo to use that linker for this target.
+            #
+            # ARMv9-A cores (Cortex-A510, A710, A720, X1+ …) are 64-bit
+            # ARM and use the `aarch64` ISA, so this target is the right
+            # answer for "native armv9": there is no separate Rust
+            # triple for ARMv9 because ARMv9-A *is* AArch64.
+            cross_apt: "gcc-aarch64-linux-gnu"
+            linker: "aarch64-linux-gnu-gcc"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain (${{ matrix.target }})
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compile linker
+        if: matrix.cross_apt != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cross_apt }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        # Setting CARGO_TARGET_AARCH64_..._LINKER unconditionally is
+        # harmless for the x86 row — Cargo only consults the var that
+        # matches the active target triple, so the empty value passed on
+        # x86 is never read.
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin cryptovote
+
+      - name: Package binary
+        id: pkg
+        run: |
+          STAGING="cryptovote-${{ matrix.target }}"
+          mkdir "$STAGING"
+          cp target/${{ matrix.target }}/release/cryptovote "$STAGING/"
+          cp README.md "$STAGING/" 2>/dev/null || true
+          tar -czf "${STAGING}.tar.gz" "$STAGING"
+          # Print sha256 alongside the artefact for downstream verification.
+          sha256sum "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
+          echo "archive=${STAGING}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cryptovote-${{ matrix.target }}
+          path: |
+            cryptovote-${{ matrix.target }}.tar.gz
+            cryptovote-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+  build-wasm-browser:
+    name: WASM — browser (wasm32-unknown-unknown via wasm-pack)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain (wasm32-unknown-unknown)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        # The official installer is faster than `cargo install`. It
+        # downloads a prebuilt binary that matches the runner arch.
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build browser bundle
+        # `--target web` emits ESM glue suitable for native ES modules
+        # in a browser. The `wasm` feature gates the wasm-bindgen
+        # surface; `--no-default-features` drops the CLI bin from the
+        # build graph so clap doesn't get pulled into the bundle.
+        run: |
+          wasm-pack build \
+            --release \
+            --target web \
+            --out-dir pkg-browser \
+            -- \
+            --no-default-features \
+            --features wasm \
+            --locked
+
+      - name: Package browser bundle
+        run: |
+          tar -czf crypto_vote-wasm-browser.tar.gz pkg-browser
+          sha256sum crypto_vote-wasm-browser.tar.gz > crypto_vote-wasm-browser.tar.gz.sha256
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: crypto_vote-wasm-browser
+          path: |
+            crypto_vote-wasm-browser.tar.gz
+            crypto_vote-wasm-browser.tar.gz.sha256
+          if-no-files-found: error
+
+  build-wasm-server:
+    name: WASM — server (wasm32-wasip1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain (wasm32-wasip1)
+        # wasm32-wasip1 is the renamed wasm32-wasi target; it stabilised
+        # in Rust 1.78. Our edition = 2024 requires ≥ 1.85, so we are
+        # comfortably past the rename.
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32-wasip1
+
+      - name: Build WASI module
+        # No wasm-bindgen here: this artefact is meant to be loaded by a
+        # server-side wasm runtime (wasmtime, wasmer, …), not by JS. We
+        # build the rlib/cdylib with default features off so neither the
+        # CLI nor wasm-bindgen are pulled in. `getrandom` falls back to
+        # WASI's `random_get` automatically on this target.
+        run: cargo build --release --locked --target wasm32-wasip1 --lib --no-default-features
+
+      - name: Package WASI module
+        run: |
+          STAGING="crypto_vote-wasm32-wasip1"
+          mkdir "$STAGING"
+          cp target/wasm32-wasip1/release/crypto_vote.wasm "$STAGING/"
+          cp README.md "$STAGING/" 2>/dev/null || true
+          tar -czf "${STAGING}.tar.gz" "$STAGING"
+          sha256sum "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: crypto_vote-wasm32-wasip1
+          path: |
+            crypto_vote-wasm32-wasip1.tar.gz
+            crypto_vote-wasm32-wasip1.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    # Only fire when the workflow was triggered by a tag push. Manual
+    # `workflow_dispatch` runs still build the artefacts above (useful
+    # for smoke-testing the pipeline) but skip the release step.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build-native
+      - build-wasm-browser
+      - build-wasm-server
+    runs-on: ubuntu-latest
+    permissions:
+      # `softprops/action-gh-release` needs write access to create the
+      # release and upload assets via the GitHub REST API.
+      contents: write
+    steps:
+      - name: Download all artefacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artefacts
+
+      - name: Flatten artefact tree
+        # `download-artifact` nests each artefact under its name; the
+        # release uploader takes a flat file list, so we move everything
+        # into one directory.
+        run: |
+          mkdir release-files
+          find artefacts -type f \( -name "*.tar.gz" -o -name "*.sha256" \) -exec mv {} release-files/ \;
+          ls -la release-files
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: release-files/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

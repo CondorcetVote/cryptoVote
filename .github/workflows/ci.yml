@@ -1,0 +1,93 @@
+# Continuous integration — runs on every push and pull request against
+# main. The build matrix is deliberately small: this crate has no
+# platform-specific code, so a single Linux runner on stable Rust is
+# enough to catch regressions. The release workflow is what fans out to
+# every target triple.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel any in-flight CI run for the same ref when a new commit lands.
+# Saves runner minutes on rapid pushes without affecting correctness.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Deny warnings everywhere so a `clippy::pedantic` slipping into the
+  # codebase fails CI instead of being merged silently.
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  test:
+    name: Test (stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build artefacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests (default features)
+        run: cargo test --all-targets --verbose
+
+      - name: Run doctests
+        run: cargo test --doc
+
+  lint:
+    name: Lint (rustfmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain with rustfmt + clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          # We will also clippy-check the WASM feature, which needs the
+          # wasm32 target installed so wasm-bindgen's procedural code
+          # compiles. Pulling the target in here saves a round-trip.
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: rustfmt — formatting must match
+        run: cargo fmt --all -- --check
+
+      - name: clippy — default features
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: clippy — WASM feature
+        # The `wasm` feature is what the browser bundle actually compiles
+        # against, so it deserves the same scrutiny as the default build.
+        # Targeting wasm32-unknown-unknown because wasm-bindgen's macros
+        # generate code that only type-checks on that target.
+        run: cargo clippy --no-default-features --features wasm --target wasm32-unknown-unknown --lib -- -D warnings
+
+  audit:
+    name: Security audit (cargo-audit)
+    runs-on: ubuntu-latest
+    # Don't gate the whole CI on transitive-dep CVEs. The check still
+    # runs and surfaces in the PR status, but a yanked-but-unexploitable
+    # transitive crate should not block a fix from merging.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+
+      - name: Run cargo-audit
+        run: cargo audit

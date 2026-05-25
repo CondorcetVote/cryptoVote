@@ -156,6 +156,29 @@ fn invalid_hex_inputs_are_rejected_cleanly() {
     ));
 }
 
+/// Split `0..len` into `n_chunks` contiguous ranges, balanced as evenly
+/// as possible. Used by the malleability tests to fan a bit-flipping
+/// sweep across all available cores via `std::thread::scope`.
+fn split_range(len: usize, n_chunks: usize) -> Vec<std::ops::Range<usize>> {
+    let n = n_chunks.max(1).min(len.max(1));
+    let base = len / n;
+    let extra = len % n;
+    let mut ranges = Vec::with_capacity(n);
+    let mut start = 0;
+    for i in 0..n {
+        let end = start + base + usize::from(i < extra);
+        ranges.push(start..end);
+        start = end;
+    }
+    ranges
+}
+
+fn num_test_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}
+
 /// Flipping a single bit *anywhere* in the signature must invalidate it.
 ///
 /// This is the strongest cheap malleability assertion we can make
@@ -164,28 +187,42 @@ fn invalid_hex_inputs_are_rejected_cleanly() {
 /// the signature were silently ignored at verification, an attacker
 /// could re-broadcast a "different" proof with the same effect — this
 /// test would catch that regression.
+///
+/// The sweep is fanned across `available_parallelism()` scoped threads:
+/// every iteration is independent (read-only on the inputs), so dropping
+/// to a single thread would only make the test artificially slow.
 #[test]
 fn signature_is_bit_malleability_resistant() {
     let (sk, ring) = fresh_election(3);
     let proof = sign_vote(&sk, b"option-A", EID, &ring).unwrap();
-
     let original = proof.signature.to_bytes();
-    for byte_index in 0..original.len() {
-        for bit in 0..8u8 {
-            let mut tampered = original.clone();
-            tampered[byte_index] ^= 1 << bit;
 
-            // Parsing may already reject (the tampered byte falls in a
-            // scalar that no longer reduces canonically). Either outcome
-            // is fine — what we forbid is "parses *and* verifies".
-            if let Ok(sig) = Signature::from_bytes(&tampered, ring.len()) {
-                assert!(
-                    !verify_vote(b"option-A", EID, &sig, &proof.key_image, &ring),
-                    "tampered signature accepted at byte {byte_index} bit {bit}"
-                );
-            }
+    std::thread::scope(|s| {
+        for range in split_range(original.len(), num_test_threads()) {
+            let original = &original;
+            let ring = &ring;
+            let key_image = &proof.key_image;
+            s.spawn(move || {
+                for byte_index in range {
+                    for bit in 0..8u8 {
+                        let mut tampered = original.clone();
+                        tampered[byte_index] ^= 1 << bit;
+
+                        // Parsing may already reject (the tampered byte
+                        // falls in a scalar that no longer reduces
+                        // canonically). Either outcome is fine — what
+                        // we forbid is "parses *and* verifies".
+                        if let Ok(sig) = Signature::from_bytes(&tampered, ring.len()) {
+                            assert!(
+                                !verify_vote(b"option-A", EID, &sig, key_image, ring),
+                                "tampered signature accepted at byte {byte_index} bit {bit}"
+                            );
+                        }
+                    }
+                }
+            });
         }
-    }
+    });
 }
 
 /// Flipping a single bit in the key image must invalidate the proof.
@@ -199,21 +236,29 @@ fn signature_is_bit_malleability_resistant() {
 fn key_image_is_bit_malleability_resistant() {
     let (sk, ring) = fresh_election(3);
     let proof = sign_vote(&sk, b"option-A", EID, &ring).unwrap();
-
     let original = proof.key_image.to_bytes();
-    for byte_index in 0..original.len() {
-        for bit in 0..8u8 {
-            let mut tampered = original;
-            tampered[byte_index] ^= 1 << bit;
 
-            if let Ok(ki) = KeyImage::from_bytes(&tampered) {
-                assert!(
-                    !verify_vote(b"option-A", EID, &proof.signature, &ki, &ring),
-                    "tampered key image accepted at byte {byte_index} bit {bit}"
-                );
-            }
+    std::thread::scope(|s| {
+        for range in split_range(original.len(), num_test_threads()) {
+            let ring = &ring;
+            let signature = &proof.signature;
+            s.spawn(move || {
+                for byte_index in range {
+                    for bit in 0..8u8 {
+                        let mut tampered = original;
+                        tampered[byte_index] ^= 1 << bit;
+
+                        if let Ok(ki) = KeyImage::from_bytes(&tampered) {
+                            assert!(
+                                !verify_vote(b"option-A", EID, signature, &ki, ring),
+                                "tampered key image accepted at byte {byte_index} bit {bit}"
+                            );
+                        }
+                    }
+                }
+            });
         }
-    }
+    });
 }
 
 /// A random Ristretto point passed as a key image must not validate.

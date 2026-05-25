@@ -119,27 +119,65 @@ deterministically.
 
 ## Build matrix
 
-The release workflow produces four artefacts. The same commands work
+The release workflow produces five artefacts. The same commands work
 locally — pick the row that matches what you actually need.
 
-| Target | Use case | Toolchain prerequisite |
+| Target | Use case | Extra toolchain (beyond `rustup target add`) |
 |---|---|---|
-| `x86_64-unknown-linux-gnu` | Native x64 Linux CLI | `rustup target add x86_64-unknown-linux-gnu` (default on Linux) |
-| `aarch64-unknown-linux-gnu` | Native ARM64 / ARMv9 Linux CLI | `rustup target add aarch64-unknown-linux-gnu` + cross linker `gcc-aarch64-linux-gnu` |
-| `wasm32-unknown-unknown` (via `wasm-pack`) | Browser ES module | `rustup target add wasm32-unknown-unknown` + `cargo install wasm-pack` |
-| `wasm32-wasip1` | Server-side WASM (wasmtime, wasmer, …) | `rustup target add wasm32-wasip1` |
+| `x86_64-unknown-linux-gnu` | Native x64 Linux CLI (glibc-linked) | a working system C linker (any dev box has one) |
+| `x86_64-unknown-linux-musl` | Fully static x64 Linux CLI (any distro) | a musl C toolchain providing `musl-gcc` |
+| `aarch64-unknown-linux-gnu` | Native ARM64 / ARMv9 Linux CLI | a cross-toolchain providing `aarch64-linux-gnu-gcc` |
+| `wasm32-unknown-unknown` (via `wasm-pack`) | Browser ES module | `cargo install wasm-pack` |
+| `wasm32-wasip1` | Server-side WASM (wasmtime, wasmer, …) | none — `rust-lld` is used automatically |
 
 The crate uses Rust edition 2024 (implicit toolchain floor: 1.85). CI
 tracks `stable`; no stricter MSRV is advertised because it would be an
 unverified promise.
 
+> The install commands below are **Debian/Ubuntu** examples (`apt`).
+> Substitute your distribution's package manager: `dnf` on Fedora,
+> `pacman` on Arch, `zypper` on openSUSE, `brew` on macOS, etc. The
+> package names usually map directly — search for `musl-gcc` /
+> `aarch64-linux-gnu-gcc` on your distro to find the right one. The
+> CI workflow runs on `ubuntu-latest`, which is why upstream artefacts
+> use the apt path.
+
 ### Native x86_64 Linux CLI
+
+Prerequisite: a working system C linker. Any dev machine already has
+one (`build-essential` on Debian/Ubuntu, `base-devel` on Arch, Xcode CLT
+on macOS, …). Nothing crypto_vote-specific to install.
 
 ```bash
 cargo build --release --locked \
     --target x86_64-unknown-linux-gnu --bin cryptovote
 # → target/x86_64-unknown-linux-gnu/release/cryptovote
 ```
+
+### Static x86_64 Linux CLI (musl)
+
+Produces a fully self-contained binary with no dynamic libc dependency,
+so the same file runs on any Linux distribution regardless of its
+installed glibc version. Slightly larger than the glibc build (~10–15 %)
+in exchange for portability.
+
+Prerequisite: a musl C toolchain that provides `musl-gcc`. Cargo
+auto-detects it for this target — no env var needed.
+
+```bash
+# Debian / Ubuntu — adjust for your distro.
+sudo apt-get install -y musl-tools          # Debian/Ubuntu
+#   Fedora:  sudo dnf install musl-gcc
+#   Arch:    sudo pacman -S musl
+#   macOS:   brew install FiloSottile/musl-cross/musl-cross
+
+cargo build --release --locked \
+    --target x86_64-unknown-linux-musl --bin cryptovote
+# → target/x86_64-unknown-linux-musl/release/cryptovote
+```
+
+The resulting binary has no `.so` dependencies (`ldd` reports
+"statically linked"); copy it anywhere, no install step needed.
 
 ### Native ARM64 Linux CLI
 
@@ -148,15 +186,30 @@ the AArch64 ISA, so this is also the right target for "native ARMv9"
 — there is no separate Rust triple for ARMv9 because ARMv9-A *is*
 AArch64.
 
-```bash
-# Install the cross-linker once.
-sudo apt-get install -y gcc-aarch64-linux-gnu
+Prerequisite: a cross-toolchain that provides an `aarch64-linux-gnu-gcc`
+binary (used as the linker driver) plus ARM64 glibc + crt files.
 
-# Build, telling Cargo which linker to use for the target triple.
+```bash
+# Debian / Ubuntu — adjust for your distro.
+sudo apt-get install -y gcc-aarch64-linux-gnu   # Debian/Ubuntu
+#   Fedora:  sudo dnf install gcc-aarch64-linux-gnu
+#   Arch:    sudo pacman -S aarch64-linux-gnu-gcc       (from AUR)
+#   macOS:   brew install aarch64-linux-gnu-gcc          (from messense/macos-cross-toolchains)
+
+# Tell Cargo which linker to use for the target triple.
 CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
 cargo build --release --locked \
     --target aarch64-unknown-linux-gnu --bin cryptovote
 # → target/aarch64-unknown-linux-gnu/release/cryptovote
+```
+
+If a packaged cross-toolchain is not available on your platform, the
+[`cross`](https://github.com/cross-rs/cross) tool (Docker-based) builds
+the same artefact without touching your host:
+
+```bash
+cargo install cross
+cross build --release --locked --target aarch64-unknown-linux-gnu --bin cryptovote
 ```
 
 ### Browser WASM (`wasm32-unknown-unknown` via `wasm-pack`)

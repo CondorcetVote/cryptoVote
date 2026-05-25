@@ -7,10 +7,11 @@
 #
 # Artefacts produced:
 #
-#   1. cryptovote-x86_64-unknown-linux-gnu.tar.gz   — native x64 Linux CLI
-#   2. cryptovote-aarch64-unknown-linux-gnu.tar.gz  — native ARM64 / ARMv9 Linux CLI
-#   3. crypto_vote-wasm-browser.tar.gz              — wasm-pack bundle for browsers
-#   4. crypto_vote-wasm32-wasip1.tar.gz             — server-side WASM (WASI preview 1)
+#   1. cryptovote-x86_64-unknown-linux-gnu.tar.gz   — native x64 Linux CLI (glibc-linked)
+#   2. cryptovote-x86_64-unknown-linux-musl.tar.gz  — native x64 Linux CLI (fully static musl)
+#   3. cryptovote-aarch64-unknown-linux-gnu.tar.gz  — native ARM64 / ARMv9 Linux CLI
+#   4. crypto_vote-wasm-browser.tar.gz              — wasm-pack bundle for browsers
+#   5. crypto_vote-wasm32-wasip1.tar.gz             — server-side WASM (WASI preview 1)
 #
 # Note on item 4: `wasm64-unknown-unknown` is a Tier 3 target requiring
 # nightly Rust, and several transitive dependencies (notably
@@ -53,6 +54,15 @@ jobs:
             # triple for ARMv9 because ARMv9-A *is* AArch64.
             cross_apt: "gcc-aarch64-linux-gnu"
             linker: "aarch64-linux-gnu-gcc"
+          - target: x86_64-unknown-linux-musl
+            # Static-musl variant of the x86_64 CLI: produces a fully
+            # self-contained binary with no dynamic libc dependency, so
+            # it runs on any Linux distribution regardless of its glibc
+            # version. `musl-tools` provides `musl-gcc`, which Cargo
+            # picks up automatically for this target — no explicit
+            # linker env var needed.
+            cross_apt: "musl-tools"
+            linker: ""
     steps:
       - uses: actions/checkout@v6
 

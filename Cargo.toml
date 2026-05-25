@@ -35,6 +35,12 @@ cli = ["dep:clap"]
 # Expose the public API to JavaScript via `wasm-bindgen`. Enable when
 # building the browser module with `wasm-pack`.
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:getrandom", "getrandom/wasm_js"]
+# Expose the public API as an Extism plugin. The same `.wasm` artefact
+# is then loadable by every Extism host SDK (browser, Node, Python,
+# Go, Rust, …). We target `wasm32-wasip1` for this flavour so `SysRng`
+# reads from WASI's `random_get` and no extra getrandom backend is
+# needed.
+extism = ["dep:extism-pdk", "dep:serde"]
 
 [dependencies]
 # Ristretto255 group operations and scalar arithmetic. The local BLSAG
@@ -89,6 +95,15 @@ js-sys = { version = "0.3", optional = true }
 # optional direct dependency only so the `wasm` feature can enable that backend
 # on the same `getrandom` version used by `rand`.
 getrandom = { version = "0.4", optional = true }
+
+# Extism Plugin Development Kit. Provides the `#[plugin_fn]` macro and
+# host/guest ABI that lets a single `.wasm` artefact run inside every
+# Extism host SDK (browser, Node, Python, Go, Rust, …).
+extism-pdk = { version = "1", optional = true }
+
+# Needed for `#[derive(Serialize, Deserialize)]` on the Extism I/O
+# structs. Pulled in only when the `extism` feature is on.
+serde = { version = "1", features = ["derive"], optional = true }
 
 # Release profile tuned for small, fast WebAssembly artefacts. `opt-level
 # = "z"` favours code size over speed, which is normally what you want

@@ -13,8 +13,9 @@
 #   4. cryptovote-aarch64-unknown-linux-musl.tar.gz — ARM64 Linux CLI (fully static musl)
 #   5. cryptovote-riscv64gc-unknown-linux-gnu.tar.gz — RISC-V 64 Linux CLI (glibc-linked)
 #   6. cryptovote-aarch64-apple-darwin.tar.gz       — Apple Silicon macOS CLI
-#   7. crypto_vote-wasm-browser.tar.gz              — wasm-pack bundle for browsers
+#   7. crypto_vote-wasm-browser.tar.gz              — wasm-pack bundle for browsers (wasm-bindgen)
 #   8. crypto_vote-wasm32-wasip1.tar.gz             — server-side WASM (WASI preview 1)
+#   9. crypto_vote-extism.tar.gz                    — single `.wasm` for every Extism host SDK
 #
 # Not shipped here:
 #   - riscv64gc-unknown-linux-musl: rustup's `rust-std` for this Tier 2
@@ -234,6 +235,46 @@ jobs:
             crypto_vote-wasm32-wasip1.tar.gz.sha256
           if-no-files-found: error
 
+  build-wasm-extism:
+    name: WASM — Extism plugin (wasm32-wasip1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain (wasm32-wasip1)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32-wasip1-extism
+
+      - name: Build Extism plugin
+        # Same target triple as the plain WASI build, but with the
+        # `extism` feature on instead of the default `cli`. WASI's
+        # `random_get` feeds `SysRng` directly, so no extra getrandom
+        # backend is needed. The resulting `.wasm` runs in every Extism
+        # host SDK (browser via `@extism/extism`, Node, Python, Go, …).
+        run: cargo build --release --locked --target wasm32-wasip1 --lib --no-default-features --features extism
+
+      - name: Package Extism plugin
+        run: |
+          STAGING="crypto_vote-extism"
+          mkdir "$STAGING"
+          cp target/wasm32-wasip1/release/crypto_vote.wasm "$STAGING/crypto_vote-extism.wasm"
+          cp README.md "$STAGING/" 2>/dev/null || true
+          tar -czf "${STAGING}.tar.gz" "$STAGING"
+          sha256sum "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: crypto_vote-extism
+          path: |
+            crypto_vote-extism.tar.gz
+            crypto_vote-extism.tar.gz.sha256
+          if-no-files-found: error
+
   publish:
     name: Publish GitHub Release
     # Only fire when the workflow was triggered by a tag push. Manual
@@ -244,6 +285,7 @@ jobs:
       - build-native
       - build-wasm-browser
       - build-wasm-server
+      - build-wasm-extism
     runs-on: ubuntu-latest
     permissions:
       # `softprops/action-gh-release` needs write access to create the

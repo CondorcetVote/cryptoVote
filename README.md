@@ -119,12 +119,12 @@ deterministically.
 
 ## Build matrix
 
-The release workflow produces eight artefacts; the same commands work
-locally. Pick the triple that matches your need, install its one-off
-prerequisite, then run the matching build command. Edition 2024 implies
-Rust ≥ 1.85; CI tracks `stable`.
+The release workflow produces nine artefacts; the same commands work
+locally. Pick the triple/flavour that matches your need, install its
+one-off prerequisite, then run the matching build command. Edition 2024
+implies Rust ≥ 1.85; CI tracks `stable`.
 
-| Triple | Build host | One-off setup | Output |
+| Triple — flavour | Build host | One-off setup | Output |
 |---|---|---|---|
 | `x86_64-unknown-linux-gnu` | Linux x64 | system C linker (any dev box has one) | dynamic ELF, ~700 KB |
 | `x86_64-unknown-linux-musl` | Linux x64 | `musl-tools` (provides `musl-gcc`) | **static ELF**, ~800 KB |
@@ -132,8 +132,9 @@ Rust ≥ 1.85; CI tracks `stable`.
 | `aarch64-unknown-linux-musl` | Linux x64 or arm | none — uses `rust-lld` | **static ELF** |
 | `riscv64gc-unknown-linux-gnu` | Linux x64 or arm | `gcc-riscv64-linux-gnu` cross-toolchain | dynamic ELF |
 | `aarch64-apple-darwin` | macOS arm (M-series) | Xcode Command Line Tools | Mach-O |
-| `wasm32-unknown-unknown` | any | `cargo install wasm-pack` | ES-module bundle |
-| `wasm32-wasip1` | any | none — uses `rust-lld` | WASI module |
+| `wasm32-unknown-unknown` — wasm-bindgen | any | `cargo install wasm-pack` | ES-module bundle for browsers |
+| `wasm32-wasip1` — plain lib | any | none — uses `rust-lld` | bare WASI module |
+| `wasm32-wasip1` — **Extism plugin** | any | none — uses `rust-lld` | single `.wasm` for every Extism host SDK |
 
 > No `riscv64gc-unknown-linux-musl` row: rustup's bundle for that Tier 2
 > target is missing parts of musl libgcc_s, so `rust-lld` cannot link
@@ -197,6 +198,16 @@ cargo build --release --locked --target wasm32-wasip1 --lib --no-default-feature
 `wasm64-unknown-unknown` is a Tier 3 nightly-only target with poor
 dep support, which is why `wasm32-wasip1` is the documented
 server-side option.
+
+The Extism flavour is the same target with `--features extism`
+instead of no features:
+
+```bash
+cargo build --release --locked --target wasm32-wasip1 --lib --no-default-features --features extism
+# → target/wasm32-wasip1/release/crypto_vote.wasm   (~360 KB)
+```
+
+See [Extism plugin](#extism-plugin) for the JS-side usage.
 
 ## Using the library
 
@@ -480,6 +491,129 @@ Before calling `verify_vote_wasm`, the host should:
    to the store *atomically with* recording the ballot, so a crash
    between the two cannot let a voter slip through twice.
 
+## Extism plugin
+
+The Extism flavour ships **one `.wasm` artefact that runs in every
+Extism host SDK** — browser via `@extism/extism`, Node, Deno, Bun,
+Python, Go, Rust, Java, even the standalone `extism` CLI. Same binary,
+same calls, regardless of the host language. Build it with
+`--features extism --target wasm32-wasip1` (see the build matrix
+above); WASI provides the RNG, no extra wiring required.
+
+When to pick the Extism flavour over the [wasm-bindgen
+flavour](#using-from-javascript--webassembly) :
+
+- ✅ You want the same plugin loadable from multiple host languages
+  (e.g. a Node.js verifier *and* a Python verifier and a Go verifier).
+- ✅ You want sandboxing semantics provided by the host (the plugin
+  cannot read disk, env, or network unless explicitly granted).
+- ❌ You need the absolute lowest call overhead in the browser — the
+  wasm-bindgen path is direct, the Extism path goes through JSON
+  encoding on every call.
+- ❌ You care about wiping the JS-side copy of the secret with
+  `.fill(0)` — Extism passes the secret as a hex string inside a JSON
+  buffer, which the JS host SDK does not let you overwrite.
+
+### Plugin function signatures
+
+| Plugin function | JSON input | JSON output |
+|---|---|---|
+| `generate_identity` | *(empty)* | `{"secret": <hex64>, "public": <hex64>}` |
+| `sign_vote` | `{"secret": <hex64>, "vote": <hex>, "election_id": <str>, "ring": [<hex64>, …]}` | `{"signature": <hex>, "key_image": <hex64>}` |
+| `verify_vote` | `{"vote": <hex>, "election_id": <str>, "signature": <hex>, "key_image": <hex64>, "ring": [<hex64>, …]}` | `{"valid": <bool>}` |
+
+`vote` is hex-encoded *bytes* — the host can put JSON, Protobuf, or
+arbitrary binary in there; the library treats it opaquely. Hex was
+picked over base64 for consistency with the rest of the public API.
+
+### Browser example
+
+```js
+// One-time install:  npm install @extism/extism
+import createPlugin from "@extism/extism";
+
+// `useWasi: true` is required because the plugin is built for
+// wasm32-wasip1 (so `SysRng` can read random bytes from the WASI
+// shim). The browser SDK ships a WASI polyfill internally.
+const plugin = await createPlugin(
+    "/static/crypto_vote-extism.wasm",
+    { useWasi: true },
+);
+
+// --- Operation A — generate an identity ---
+const { secret, public: publicHex } = await plugin
+    .call("generate_identity", "")
+    .then(out => out.json());
+
+// `secret` is a 64-char hex string. Persist it however you want; this
+// flavour does not offer the `.fill(0)` zeroisation hook that the
+// wasm-bindgen flavour does.
+await persistVoterSecret(secret);
+
+// --- Operation B — sign a ballot ---
+const ballotBytes = new TextEncoder().encode(JSON.stringify({ choice: "option-A" }));
+const ballotHex   = Array.from(ballotBytes, b => b.toString(16).padStart(2, "0")).join("");
+
+const ring = await fetch("/api/election/ring").then(r => r.json());
+
+const { signature, key_image } = await plugin
+    .call("sign_vote", JSON.stringify({
+        secret,
+        vote:        ballotHex,
+        election_id: "election-2026",
+        ring,
+    }))
+    .then(out => out.json());
+
+// --- Operation C — verify (also works server-side; see below) ---
+const { valid } = await plugin
+    .call("verify_vote", JSON.stringify({
+        vote:        ballotHex,
+        election_id: "election-2026",
+        signature,
+        key_image,
+        ring,
+    }))
+    .then(out => out.json());
+```
+
+### Node.js / Deno / Bun example
+
+**Same code as the browser** — that is the whole point of the Extism
+flavour. The only difference is how you load the `.wasm` (a file path
+on the server, a URL in the browser):
+
+```js
+import createPlugin from "@extism/extism";
+import { readFileSync } from "node:fs";
+
+const plugin = await createPlugin(
+    { wasm: [{ data: readFileSync("./crypto_vote-extism.wasm") }] },
+    { useWasi: true },
+);
+
+const { valid } = await plugin
+    .call("verify_vote", JSON.stringify({ /* ... same shape ... */ }))
+    .then(out => out.json());
+```
+
+The host SDK is also available for [Python](https://github.com/extism/python-sdk),
+[Go](https://github.com/extism/go-sdk),
+[Rust](https://github.com/extism/extism/tree/main/runtime),
+[Java](https://github.com/extism/java-sdk), and others — the JSON
+shapes above are identical for all of them.
+
+### Quick smoke test from the CLI
+
+The `extism` standalone CLI is the fastest way to confirm the plugin
+loads and behaves correctly before integrating it anywhere:
+
+```bash
+# Install once: cargo install extism-cli   (or grab a release binary)
+extism call crypto_vote-extism.wasm generate_identity --wasi
+# → {"secret":"…","public":"…"}
+```
+
 ## Tests
 
 ```bash
@@ -519,6 +653,7 @@ src/
 ├── signing.rs        — Operation B (ring canonicalisation + NFC of election_id)
 ├── verifying.rs      — Operation C
 ├── wasm.rs           — wasm-bindgen layer (feature-gated, Zeroizing secrets)
+├── extism.rs         — Extism PDK layer (feature-gated, JSON-over-WASI)
 └── main.rs           — CLI binary
 tests/
 ├── integration.rs    — public-API round-trips, malleability, negative paths

@@ -120,6 +120,9 @@ pub mod verifying;
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
+#[cfg(feature = "extism")]
+pub mod extism;
+
 // Top-level re-exports so the public API is `crypto_vote::sign_vote`,
 // not `crypto_vote::signing::sign_vote`. Anything not re-exported here
 // is still reachable through its module, but is not considered the

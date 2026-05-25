@@ -17,11 +17,6 @@
 //!
 //! ## Ring canonicalisation
 //!
-//! Nazgul's [`nazgul::blsag::BLSAG::sign`] takes the ring *without* the
-//! signer's own public key, plus the index where it should be inserted.
-//! That index is not part of the signature, so the host must agree with
-//! the signer on the order of the ring or verification fails.
-//!
 //! We side-step the whole "did you order the ring correctly?" question
 //! by sorting the authorised list lexicographically by its compressed
 //! byte representation. Both sides do that independently, so neither
@@ -41,17 +36,13 @@
 //! The fixed-width length prefix is what makes the construction
 //! unambiguous — without it, `(eid="AB", vote="C")` and
 //! `(eid="A", vote="BC")` would hash identically. With it, a signature
-//! produced for one election never validates for another, which gives
-//! the host a second line of defence on top of "store key images
-//! scoped per election" (see the README's anti-double-vote contract).
+//! produced for one election never validates for another. The same
+//! `election_id` also scopes the key-image hash-to-point base, so a
+//! reused identity does not emit the same public tag across elections.
 
 use crate::error::{Error, Result};
 use crate::types::{KeyImage, PublicKey, SecretKey, Signature, VoteProof};
-use blake2::Blake2b512;
 use curve25519_dalek::ristretto::RistrettoPoint;
-use nazgul::blsag::BLSAG;
-use nazgul::traits::Sign;
-use rand::rngs::OsRng;
 
 /// Operation B: produce the signed proof for a ballot.
 ///
@@ -115,31 +106,28 @@ pub fn sign_vote(
         .position(|pk| *pk == signer_pk)
         .ok_or(Error::SignerNotInRing)?;
 
-    // 3. Build the "decoy" ring nazgul expects: every other authorised
-    //    public key, in the same canonical order. Nazgul will re-insert
-    //    the signer's key at `secret_index` itself.
-    let decoy_ring: Vec<RistrettoPoint> = sorted
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != secret_index)
-        .map(|(_, pk)| pk.point)
-        .collect();
+    // 3. Convert the canonical public API types into curve points for
+    //    the local BLSAG implementation. The ring is full: signer
+    //    included at `secret_index`.
+    let ring_points: Vec<RistrettoPoint> = sorted.iter().map(|pk| pk.point).collect();
 
-    // 4. Bind the message to the election context before handing it
-    //    to nazgul. See the module-level docs for the wire format.
+    // 4. Bind the message to the election context. See the module-level
+    //    docs for the wire format.
     let bound = bind_to_election(election_id, vote);
 
-    // 5. Hand off to nazgul. `Blake2b512` is wired in here as the
-    //    `Hash` generic, so every challenge the protocol computes goes
-    //    through Blake2b-512.
-    let blsag =
-        BLSAG::sign::<Blake2b512, OsRng>(secret_key.scalar, decoy_ring, secret_index, &bound);
+    // 5. Produce the experimental BLSAG proof. The key image is scoped
+    //    by `election_id`, while the challenge chain signs `bound`.
+    let blsag = crate::blsag::sign(
+        secret_key.scalar,
+        &ring_points,
+        secret_index,
+        election_id,
+        &bound,
+    );
 
-    // 5. Repackage into our public types. We drop nazgul's `ring` field
-    //    on purpose: the verifier reconstructs it from its own copy of
-    //    the authorised list, so shipping it would be redundant — and
-    //    worse, would let a malicious signer ship a ring that does not
-    //    match the authorised one.
+    // 6. Repackage into our public types. We still do not store the
+    //    ring in the signature: the verifier reconstructs it from its
+    //    own copy of the authorised list.
     Ok(VoteProof {
         signature: Signature {
             challenge: blsag.challenge,

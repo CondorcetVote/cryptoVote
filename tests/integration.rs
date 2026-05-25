@@ -62,9 +62,21 @@ fn host_can_detect_double_vote_via_tag() {
 }
 
 #[test]
+fn key_images_are_not_linkable_across_elections() {
+    // Same voter, same ballot, same ring, different election context:
+    // election-scoped key images intentionally emit different public tags.
+    let (sk, ring) = fresh_election(3);
+    let p1 = sign_vote(&sk, b"option-A", "election-A", &ring).unwrap();
+    let p2 = sign_vote(&sk, b"option-A", "election-B", &ring).unwrap();
+    assert_ne!(p1.key_image, p2.key_image);
+}
+
+#[test]
 fn election_binding_isolates_signatures_across_elections() {
     // A proof produced for election X must not validate when verified
     // against election Y, even when ring and secret key are identical.
+    // The key image itself is election-scoped too, but this test keeps
+    // exercising the signature binding layer.
     let (sk, ring) = fresh_election(4);
     let proof = sign_vote(&sk, b"option-A", "election-X", &ring).unwrap();
     assert!(!verify_vote(

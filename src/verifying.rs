@@ -21,10 +21,7 @@
 
 use crate::signing::{bind_to_election, canonicalised_ring};
 use crate::types::{KeyImage, PublicKey, Signature};
-use blake2::Blake2b512;
 use curve25519_dalek::ristretto::RistrettoPoint;
-use nazgul::blsag::BLSAG;
-use nazgul::traits::Verify;
 
 /// Operation C: validate a vote proof.
 ///
@@ -79,22 +76,22 @@ pub fn verify_vote(
         return false;
     }
 
-    // 3. Rebuild the nazgul `BLSAG` struct from our parts. The ring
-    //    field on the struct is the *full* canonical list (signer
-    //    included), which is exactly what we just sorted.
+    // 3. Rebuild the full canonical ring of curve points. This is the
+    //    same order the signer used.
     let ring_points: Vec<RistrettoPoint> = sorted.iter().map(|pk| pk.point).collect();
-    let blsag = BLSAG {
-        challenge: signature.challenge,
-        responses: signature.responses.clone(),
-        ring: ring_points,
-        key_image: key_image.point,
-    };
 
     // 4. Reconstruct the same election-bound byte string the signer
-    //    hashed, then hand off to nazgul. Using the same hash function
-    //    and the same byte string is what closes the loop.
+    //    hashed, then verify the contextual BLSAG equations. The
+    //    `election_id` also scopes the key-image hash-to-point base.
     let bound = bind_to_election(election_id, vote);
-    BLSAG::verify::<Blake2b512>(blsag, &bound)
+    crate::blsag::verify(
+        signature.challenge,
+        &signature.responses,
+        key_image.point,
+        &ring_points,
+        election_id,
+        &bound,
+    )
 }
 
 #[cfg(test)]
@@ -266,6 +263,17 @@ mod tests {
         let p1 = sign_vote(&sk, b"option-A", EID, &ring).unwrap();
         let p2 = sign_vote(&sk, b"option-B", EID, &ring).unwrap();
         assert_eq!(p1.key_image, p2.key_image);
+    }
+
+    #[test]
+    fn same_voter_yields_different_tags_across_elections() {
+        // The key image is scoped by election_id. This keeps
+        // same-election double-vote detection while avoiding a stable
+        // public tag across unrelated elections.
+        let (sk, ring) = fresh_ring(3);
+        let p1 = sign_vote(&sk, b"option-A", "election-A", &ring).unwrap();
+        let p2 = sign_vote(&sk, b"option-A", "election-B", &ring).unwrap();
+        assert_ne!(p1.key_image, p2.key_image);
     }
 
     #[test]

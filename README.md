@@ -16,8 +16,9 @@ three operations and refuses to take part in anything else.
 ## Cryptographic choices
 
 - **Curve**: Ristretto255 (`curve25519-dalek`). Prime-order, constant-time, pure Rust.
-- **Ring signature scheme**: BLSAG (Back's Linkable Spontaneous Anonymous Group),
-  via the [`nazgul`](https://crates.io/crates/nazgul) crate.
+- **Ring signature scheme**: an experimental BLSAG (Back's Linkable
+  Spontaneous Anonymous Group) variant implemented locally from the
+  LSAG/BLSAG equations, with election-scoped key images.
 - **Hash**: Blake2b-512 (`blake2` crate). Natively 64-byte output, fed
   directly into `Scalar::from_hash`.
 - **CSPRNG**: `OsRng`, which on `wasm32` delegates to `Crypto.getRandomValues`
@@ -27,35 +28,34 @@ three operations and refuses to take part in anything else.
 
 The module never tells the host whether a voter has already voted.
 That decision belongs to the host. The protocol gives the host one
-deterministic identifier per secret key — the **key image** — which it
-must store and de-duplicate against:
+deterministic identifier per `(secret key, election_id)` pair — the
+**key image** — which it must store and de-duplicate against:
 
 1. Retrieve the key image returned by `sign_vote`.
-2. Look it up in the host's storage (scoped per election — see
-   "Election binding" below).
+2. Look it up in the host's storage.
 3. Reject the transaction if it already exists.
 4. Otherwise ask `verify_vote` whether the proof is mathematically valid,
    and on success store the key image.
 
 ### Election binding
 
-The key image is a function of the secret key only, so the *same*
-voter using the *same* secret key in two different elections would
-produce the same tag. To make sure a signature from one election
-cannot be replayed (or accidentally de-duplicated) against another,
-every call to `sign_vote` and `verify_vote` takes an `election_id`
-byte string that is mixed into the hash chain. The host should pass a
-stable per-election identifier (UUID, slug, hash of the event
-configuration, …) on both sides.
+The key image is a function of both the secret key and the
+`election_id`. The same voter using the same secret key twice in one
+election produces the same tag, so double voting is detectable; the
+same voter using that key in another election produces a different tag,
+so public proofs are not linkable across elections just by comparing
+key images.
 
-This gives two independent layers of defence:
+Every call to `sign_vote` and `verify_vote` also mixes the same
+`election_id` byte string into the BLSAG challenge chain. The host
+should pass a stable per-election identifier (UUID, slug, hash of the
+event configuration, …) on both sides.
 
-- The **key image** is stored by the host, scoped per `election_id`.
+This gives two election-context checks:
+
+- The **key image** is itself scoped by `election_id`.
 - The **signature** itself only validates against the `election_id`
   it was produced with.
-
-A buggy host that forgets to scope its key-image store would still be
-caught by the second layer.
 
 ### Ring lifecycle: freeze before voting opens
 
@@ -326,9 +326,10 @@ Before calling `verify_vote_wasm`, the host should:
 cargo test
 ```
 
-Tests cover round-trips, the deterministic-tag property, ring-order
-independence, and every documented "invalid" case (tampered vote,
-tampered signature, swapped tag, wrong ring, malformed inputs).
+Tests cover round-trips, same-election deterministic tags,
+cross-election tag separation, ring-order independence, and every
+documented "invalid" case (tampered vote, tampered signature, swapped
+tag, wrong ring, malformed inputs).
 
 ## Layout
 
@@ -338,6 +339,7 @@ src/
 ├── error.rs      — `Error` enum (input parsing only)
 ├── types.rs      — PublicKey / SecretKey / Signature / KeyImage / VoteProof
 ├── identity.rs   — Operation A
+├── blsag.rs      — Experimental election-scoped BLSAG implementation
 ├── signing.rs    — Operation B (with ring canonicalisation)
 ├── verifying.rs  — Operation C
 ├── wasm.rs       — wasm-bindgen layer (feature-gated)

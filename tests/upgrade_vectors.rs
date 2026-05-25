@@ -1,14 +1,14 @@
 //! Frozen test vectors — tripwires for accidental protocol changes.
 //!
-//! The signature itself is *not* deterministic (nazgul samples fresh
+//! The signature itself is *not* deterministic (`sign_vote` samples fresh
 //! randomness for the signer's alpha and for every decoy response), so we
-//! cannot assert byte-for-byte equality of `sign_vote`'s output. Two
+//! cannot assert byte-for-byte equality of new `sign_vote` outputs. Two
 //! things, however, are stable across runs and can be frozen:
 //!
-//! 1. **The key image** is `I = x · H_p(x · G)`. It depends only on the
-//!    secret key, the curve, and the hash-to-point. Any upgrade that
-//!    changes one of those — switching the hash, the curve, or the
-//!    encoding of `x · G` before hashing — will break this assertion.
+//! 1. **The key image** is `I_e = x · H_p(domain || election_id || x · G)`.
+//!    It depends on the secret key, election identifier, curve, domain
+//!    separation and hash-to-point construction. Any upgrade that changes
+//!    one of those will break this assertion.
 //!
 //! 2. **A previously produced signature must still verify.** Verification
 //!    is deterministic, so a frozen `(ring, signature, key_image, vote,
@@ -18,7 +18,7 @@
 //!
 //! Vectors were generated once from fixed secret keys (`seed = 1, 2, 3`)
 //! and pasted here verbatim. If a legitimate protocol change requires
-//! regenerating them, regenerate **and** bump the spec version — silent
+//! regenerating them, document the protocol change too — silent
 //! regeneration is exactly the bug this file is meant to catch.
 
 use crypto_vote::{KeyImage, PublicKey, SecretKey, Signature, sign_vote, verify_vote};
@@ -29,8 +29,8 @@ const RING_HEX: [&str; 3] = [
     "6a493210f7499cd17fecb510ae0cea23a110e8d5b901f8acadd3095c73a3b919",
     "94741f5d5d52755ece4f23f044ee27d5d1ea1e2bd196b462166b16152a9d0259",
 ];
-const KEY_IMAGE_HEX: &str = "c6d77f893b5a01a5e995be5a568e55bb22f3931ee686f24e5d211bee967ec66d";
-const SIGNATURE_HEX: &str = "f74eff0c1be85da6ce4b68d1b4f5c1fb0b1ab976a861e93c7ab799ba51030f02ef0090fd02e244dd56d2b80248577a35315cb51dcada20f66b5a14747e27030f42bd8fdeec4cef9c916aeeab40222697ebb18b48e193bd7b304963de91f493096139b44bd6e7bb65363c32c79371e04dc7c9d1c350210f337ade9eab895aa80a";
+const KEY_IMAGE_HEX: &str = "ec073fb1bcb88afb08adbfe202c74fe6ad2a646984bbec10c763902b73d9d753";
+const SIGNATURE_HEX: &str = "0fcd75bfc58d8fae5b63c6a62e18b67eb2964e6aa772d80651a967754e4d2e0e7fe0980bc1324dbcabe5f8c1a54ea01e9c972d0e3ef9cfff9f3a036d2c6ee00728251718bf7cc2f90574c1a63f6b54ec5079d376385c8d4c8f6071856b547b07db845bf3f5f5bf4010e4231bcee66145f8f38e07c8e5b477c28b0d6d820f4706";
 const VOTE: &[u8] = b"option-A";
 const ELECTION_ID: &str = "upgrade-vector-1";
 
@@ -43,10 +43,10 @@ fn frozen_ring() -> Vec<PublicKey> {
 
 #[test]
 fn key_image_is_deterministic_for_a_fixed_secret_key() {
-    // The linking tag is a pure function of the secret key (and the
-    // curve / hash-to-point). Re-signing with the same key — even with
-    // a different ballot — must yield exactly the same tag bytes as
-    // the day the vector was minted.
+    // The linking tag is a pure function of the secret key, election
+    // identifier and contextual hash-to-point. Re-signing with the same
+    // key in the same election — even with a different ballot — must
+    // yield exactly the same tag bytes as the day the vector was minted.
     let sk = SecretKey::from_hex(SIGNER_SK_HEX).unwrap();
     let ring = frozen_ring();
 
@@ -54,14 +54,19 @@ fn key_image_is_deterministic_for_a_fixed_secret_key() {
     assert_eq!(
         proof.key_image.to_hex(),
         KEY_IMAGE_HEX,
-        "key image drifted — hash-to-point, curve encoding, or secret-scalar handling changed"
+        "key image drifted — domain, election binding, hash-to-point, curve encoding, or secret-scalar handling changed"
     );
 
-    // Same key, different ballot: tag must still match. This guards
-    // against any future change that accidentally folds ballot or
-    // election bytes into the tag derivation.
+    // Same key, same election, different ballot: tag must still match.
+    // This guards against accidentally folding ballot bytes into the
+    // tag derivation.
     let proof2 = sign_vote(&sk, b"option-B", ELECTION_ID, &ring).unwrap();
     assert_eq!(proof2.key_image.to_hex(), KEY_IMAGE_HEX);
+
+    // Same key, different election: tag must differ. This is the
+    // privacy property that prevents public cross-election correlation.
+    let proof3 = sign_vote(&sk, VOTE, "upgrade-vector-other-election", &ring).unwrap();
+    assert_ne!(proof3.key_image.to_hex(), KEY_IMAGE_HEX);
 }
 
 #[test]

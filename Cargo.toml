@@ -34,29 +34,22 @@ cli = ["dep:clap"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:getrandom"]
 
 [dependencies]
-# Linkable ring signatures (BLSAG / CLSAG / MLSAG) on Ristretto255.
-nazgul = { version = "2.1", default-features = false, features = ["std"] }
-
-# We use `Scalar`, `RistrettoPoint`, `CompressedRistretto` and the
-# Ristretto base point directly in our code, so the crate must appear
-# as a *direct* dependency (Cargo only puts direct deps in the extern
-# prelude — transitive deps are compiled but cannot be `use`d). The
-# features `digest` / `rand_core` / `alloc` are already enabled by
-# nazgul's `std` feature and unified by Cargo. We enable `zeroize`
-# directly so `SecretKey` can wipe its scalar on drop.
-# Pinned to the same major version nazgul uses, so the `Scalar` and
-# `RistrettoPoint` types are the same end-to-end.
-curve25519-dalek = { version = "4", features = ["zeroize"] }
+# Ristretto255 group operations and scalar arithmetic. The local BLSAG
+# implementation needs `digest` for `RistrettoPoint::from_hash`,
+# `rand_core` for scalar / point sampling in signing and tests, and
+# `zeroize` so `SecretKey` can wipe its scalar on drop.
+curve25519-dalek = { version = "4", features = ["digest", "rand_core", "zeroize"] }
 
 # Wipe secret scalars when their wrapper leaves scope.
 zeroize = "1"
 
 # Hash function (cryptographic core of every challenge in the protocol).
 # Blake2b-512 produces a 64-byte digest natively, which is exactly what
-# nazgul / curve25519-dalek's `Scalar::from_hash` consume.
+# curve25519-dalek's `Scalar::from_hash` and `RistrettoPoint::from_hash`
+# consume.
 blake2 = { version = "0.10", default-features = false }
 
-# `OsRng` is what feeds nazgul; on WebAssembly it delegates to
+# `OsRng` is what feeds BLSAG signing; on WebAssembly it delegates to
 # `getrandom` (which itself uses `window.crypto`). We only need the
 # `std` feature — it brings in `OsRng` and `getrandom` transitively.
 # `std_rng` would additionally pull `rand_chacha` for `thread_rng` /
@@ -80,12 +73,10 @@ js-sys = { version = "0.3", optional = true }
 # also gate this dependency behind the `wasm` feature so the native
 # build stays lean.
 #
-# Pinned to 0.2 on purpose: `rand 0.8` (pulled in by `nazgul 2.1` via
-# `rand_core 0.6`) calls `getrandom 0.2`. Bumping to 0.3 or 0.4 would
-# leave a second copy of getrandom in the tree, and the `js` feature
-# would land on the version that `rand` does *not* use — silently
-# breaking the browser RNG. The whole chain can move forward only when
-# nazgul releases a version targeting `rand_core 0.9`+.
+# Pinned to 0.2 on purpose: `rand 0.8` calls `getrandom 0.2`. Bumping
+# to 0.3 or 0.4 would leave a second copy of getrandom in the tree,
+# and the `js` feature would land on the version that `rand` does *not*
+# use — silently breaking the browser RNG.
 getrandom = { version = "0.2", features = ["js"], optional = true }
 
 # Release profile tuned for small, fast WebAssembly artefacts. `opt-level

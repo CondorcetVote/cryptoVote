@@ -155,12 +155,15 @@ impl SecretKey {
 /// The protocol's "linking tag" — what the host stores to prevent double
 /// voting.
 ///
-/// Mathematically: `I = x · H_p(x · G)`, where `x` is the secret key,
-/// `G` is the Ristretto255 base point and `H_p` is the standard
-/// hash-to-curve construction. Three properties matter:
+/// Mathematically: `I_e = x · H_p(domain || election_id || x · G)`,
+/// where `x` is the secret key, `G` is the Ristretto255 base point and
+/// `H_p` is the Ristretto hash-to-group construction. Three properties
+/// matter:
 ///
-///  - it is **deterministic** for a given secret key, so casting the
-///    same ballot twice yields the same tag;
+///  - it is **deterministic** for a given secret key and election, so
+///    casting the same ballot twice in that election yields the same tag;
+///  - it is **election-scoped**: reusing the same key in a different
+///    election yields a different public tag;
 ///  - it is **anonymous**: nothing about it leaks which member of the
 ///    ring produced it;
 ///  - it is **unforgeable**: the BLSAG proof is only valid if the tag

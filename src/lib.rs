@@ -56,10 +56,11 @@
 //!   Picked because it is implemented in pure Rust by
 //!   `curve25519-dalek`, has constant-time arithmetic, and avoids the
 //!   small-subgroup pitfalls of raw Curve25519.
-//! - **Ring signature**: BLSAG (Back's Linkable Spontaneous Anonymous
-//!   Group), from the `nazgul` crate. BLSAG is the simplest scheme
-//!   that satisfies the spec's three properties (anonymity, deterministic
-//!   tag, unforgeability).
+//! - **Ring signature**: an experimental BLSAG (Back's Linkable
+//!   Spontaneous Anonymous Group) variant implemented locally from the
+//!   LSAG/BLSAG equations. The linking tag is scoped by `election_id`,
+//!   so the same identity remains linkable inside one election but not
+//!   publicly correlatable across different elections.
 //! - **Hash**: Blake2b-512 (via the `blake2` crate). Picked because it
 //!   produces a 64-byte digest natively — which is exactly what every
 //!   challenge in the BLSAG protocol needs to feed back into a
@@ -107,6 +108,8 @@
 //!     &ring,
 //! ));
 //! ```
+
+mod blsag;
 
 pub mod error;
 pub mod identity;

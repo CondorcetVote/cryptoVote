@@ -344,3 +344,15 @@ src/
 tests/
 └── integration.rs
 ```
+
+## License
+
+This project is licensed under the **GNU Affero General Public License
+v3.0 or later** (AGPL-3.0-or-later). See [LICENSE](LICENSE) for the
+full text.
+
+The AGPL is a strong copyleft licence. In short: anyone running a
+modified version of this code as a network service must make their
+modifications available to its users. If that obligation is
+incompatible with your use case, please open an issue before
+integrating the crate.

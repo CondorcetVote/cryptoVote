@@ -2,10 +2,8 @@
 
 A pure-Rust cryptographic oracle for **verifiable, anonymous, double-vote-resistant** ballots.
 
-The crate implements the spec in
-[`docs/spec.md`](docs/spec.md) — or, equivalently, in the conversation
-that drove its creation: a minimal building block that offers exactly
-three operations and refuses to take part in anything else.
+The crate is a minimal building block that offers exactly three
+operations and refuses to take part in anything else.
 
 | # | Operation | Where it runs | Function |
 |---|-----------|---------------|----------|
@@ -56,6 +54,15 @@ This gives two election-context checks:
 - The **key image** is itself scoped by `election_id`.
 - The **signature** itself only validates against the `election_id`
   it was produced with.
+
+The library normalises `election_id` to **Unicode NFC** before
+hashing, on both the signing and the verification side. Callers can
+therefore pass the same logical identifier in any Unicode form
+(NFC, NFD, mixed) without breaking verification — the typical case
+where a server stores the ID in one normalisation and the voter's
+page receives it in another no longer silently invalidates every
+ballot. ASCII identifiers are NFC by definition, so UUIDs and slugs
+are unaffected.
 
 ### Ring size and the anonymity set
 
@@ -169,6 +176,13 @@ line-ending normalisation, Unicode normalisation, lowercasing,
 anything — verification *will* fail, because Blake2b is sensitive to
 every single byte. The safe rule is: persist the raw bytes received
 from the voter, and hand those same bytes back to `verify_vote`.
+
+Note that the vote payload is treated as *raw bytes* and is never
+normalised by the library — unlike `election_id`, which is forced to
+NFC. The asymmetry is deliberate: the election ID is a *label* the
+host controls and re-emits across encodings, so normalising it makes
+the API robust; the vote is *content* the host stores verbatim, so
+normalising it would silently change what was signed.
 
 ### Large or structured payloads in the browser
 
@@ -413,17 +427,21 @@ not affect stable builds.
 
 ```
 src/
-├── lib.rs        — crate entry point, re-exports, top-level docs
-├── error.rs      — `Error` enum (input parsing only)
-├── types.rs      — PublicKey / SecretKey / Signature / KeyImage / VoteProof
-├── identity.rs   — Operation A
-├── blsag.rs      — Experimental election-scoped BLSAG implementation
-├── signing.rs    — Operation B (with ring canonicalisation)
-├── verifying.rs  — Operation C
-├── wasm.rs       — wasm-bindgen layer (feature-gated)
-└── main.rs       — CLI binary
+├── lib.rs            — crate entry point, re-exports, top-level docs
+├── error.rs          — `Error` enum (input parsing only)
+├── types.rs          — PublicKey / SecretKey / Signature / KeyImage / VoteProof
+├── identity.rs       — Operation A
+├── blsag.rs          — Experimental election-scoped BLSAG implementation
+├── signing.rs        — Operation B (ring canonicalisation + NFC of election_id)
+├── verifying.rs      — Operation C
+├── wasm.rs           — wasm-bindgen layer (feature-gated, Zeroizing secrets)
+└── main.rs           — CLI binary
 tests/
-└── integration.rs
+├── integration.rs    — public-API round-trips, malleability, negative paths
+└── upgrade_vectors.rs — frozen test vectors (protocol-drift tripwires)
+fuzz/
+├── Cargo.toml        — separate package, excluded from the workspace
+└── fuzz_targets/     — four cargo-fuzz harnesses (see "Fuzzing")
 ```
 
 ## License

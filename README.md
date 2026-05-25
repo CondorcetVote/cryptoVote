@@ -1,5 +1,24 @@
 # crypto_vote
 
+> [!WARNING]
+> **Experimental, unaudited, AI-assisted code. Do not deploy in a real _(important, critical)_
+> election without an independent cryptographic review.**
+>
+> - **No professional security audit has been performed.** The
+>   implementation, its test surface and its threat model have only
+>   been reviewed by the author and AI assistants.
+> - **The election-scoped key-image variant is not from a published
+>   paper.** Standard BLSAG defines the linking tag as `I = x · H_p(P)`;
+>   this crate uses `I_e = x · H_p(domain ‖ election_id ‖ P)` so the
+>   same identity is unlinkable across separate elections. The
+>   construction is a small, intuitive modification of BLSAG, but it
+>   has **not** been formally analysed in the cryptographic literature
+>   (as of writing). Treat it as a research prototype.
+>
+> The crate is therefore suitable for prototyping, research,
+> educational use and internal CTF-style exercises. It is **not**
+> ready to back a critical real-world ballot.
+
 A pure-Rust cryptographic oracle for **verifiable, anonymous, double-vote-resistant** ballots.
 
 The crate is a minimal building block that offers exactly three

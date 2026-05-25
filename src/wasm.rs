@@ -2,10 +2,26 @@
 //!
 //! These are the only functions the browser ever sees. Everything they
 //! do is delegate to the pure-Rust API in the rest of the crate, after
-//! decoding hex strings into typed values. We pass hex (not raw byte
-//! arrays) because that is the format JavaScript code already uses for
-//! every other crypto artefact it manipulates, and because it keeps the
-//! JS-side glue trivially debuggable.
+//! decoding the input into typed values. We pass:
+//!
+//!  - **secret material as `Uint8Array`** (raw bytes). The JS caller can
+//!    overwrite the buffer with `.fill(0)` once it has been persisted or
+//!    used, which is the only way to make the JS-side copy of the
+//!    secret unreadable to other scripts running in the page.
+//!  - **public material as hex strings** (public keys, signatures,
+//!    linking tags). These are not secret, and hex is what every host
+//!    API already passes around on the wire.
+//!
+//! Inside Rust, every temporary buffer that holds secret bytes is
+//! wrapped in [`zeroize::Zeroizing`]. The wrapper ensures the WASM
+//! linear-memory region containing the secret is overwritten *before*
+//! its allocation is returned to the global allocator — without it, the
+//! secret would persist in the heap until reallocated, where it could
+//! be scraped by debuggers, core dumps, or another script with access
+//! to the WASM memory.
+//!
+//! See the README for the full caller-side discipline; the short
+//! version is "persist immediately, then `.fill(0)` the Uint8Array".
 //!
 //! Errors come back to JS as `JsValue::from_str(...)` so they show up
 //! as plain JS `Error` strings rather than panics. We never panic
@@ -14,6 +30,7 @@
 use crate::error::Error;
 use crate::types::{KeyImage, PublicKey, SecretKey, Signature};
 use wasm_bindgen::prelude::*;
+use zeroize::Zeroizing;
 
 fn err_to_js(e: Error) -> JsValue {
     JsValue::from_str(&format!("{e}"))
@@ -30,33 +47,74 @@ fn parse_ring(ring_hex: Vec<String>) -> Result<Vec<PublicKey>, JsValue> {
 
 /// Browser-facing version of [`crate::generate_identity`].
 ///
-/// Returns a `[secretHex, publicHex]` pair as a `js_sys::Array`. We use
-/// a positional array (rather than a struct) because it keeps the JS
-/// call-site dependency-free: `const [sk, pk] = cryptoVote.generate();`.
+/// Returns a `[secretBytes, publicHex]` pair as a `js_sys::Array`:
+///
+///  - `secretBytes` is a fresh `Uint8Array` of length 32. The JS caller
+///    is expected to persist it (IndexedDB / encrypted storage) and
+///    then call `.fill(0)` on it to wipe the in-memory copy. Failing to
+///    do so leaves the secret readable by any other script with access
+///    to the page's JS heap.
+///  - `publicHex` is the 64-character hex encoding of the public key —
+///    not secret, ready to be POSTed to the registrar.
+///
+/// On the Rust side the intermediate `[u8; 32]` holding the secret
+/// bytes is wrapped in `Zeroizing` so the WASM linear-memory region
+/// gets overwritten before the allocation is freed.
 #[wasm_bindgen]
 pub fn generate_identity_wasm() -> js_sys::Array {
     let id = crate::generate_identity();
+
+    // The freshly-allocated `[u8; 32]` lives in the WASM heap until it
+    // is dropped. Wrapping it in `Zeroizing` guarantees the bytes are
+    // overwritten before the allocator reclaims the region.
+    let secret_bytes = Zeroizing::new(id.secret_key.to_bytes());
+    let secret_js = js_sys::Uint8Array::from(&secret_bytes[..]);
+
     let arr = js_sys::Array::new();
-    arr.push(&JsValue::from_str(&id.secret_key.to_hex()));
+    arr.push(&secret_js);
     arr.push(&JsValue::from_str(&id.public_key.to_hex()));
     arr
+    // `secret_bytes` drops here; its memory is zeroed.
 }
 
 /// Browser-facing version of [`crate::sign_vote`].
 ///
-/// Returns a `[signatureHex, keyImageHex]` pair as a `js_sys::Array`.
+/// `secret_bytes` is the 32-byte raw secret key (typically a
+/// `Uint8Array` that the JS caller just read out of storage). The
+/// Rust side wraps it in `Zeroizing` immediately, so the WASM-internal
+/// copy is overwritten when the function returns. The JS caller is
+/// responsible for `.fill(0)`-ing its own `Uint8Array` once the call
+/// has returned.
 ///
 /// `vote` is a `&[u8]` so JavaScript can pass an arbitrarily large
 /// `Uint8Array` (JSON, Protobuf, anything). `election_id` is a plain
-/// JS string — typically a UUID or slug.
+/// JS string — typically a UUID or slug — and is normalised to Unicode
+/// NFC inside the crate before hashing.
+///
+/// Returns a `[signatureHex, keyImageHex]` pair as a `js_sys::Array`.
+/// Neither value is secret; hex is convenient for the host API.
 #[wasm_bindgen]
 pub fn sign_vote_wasm(
-    secret_key_hex: &str,
+    secret_bytes: Vec<u8>,
     vote: &[u8],
     election_id: &str,
     ring_hex: Vec<String>,
 ) -> Result<js_sys::Array, JsValue> {
-    let sk = SecretKey::from_hex(secret_key_hex).map_err(err_to_js)?;
+    // Wrap the WASM-side copy of the secret immediately. Whatever path
+    // we take from here (early error, success, panic), the bytes will
+    // be overwritten before the Vec's storage is freed.
+    let secret = Zeroizing::new(secret_bytes);
+    let secret_arr: &[u8; 32] = secret[..].try_into().map_err(|_| {
+        JsValue::from_str(&format!(
+            "secret must be exactly 32 bytes, got {}",
+            secret.len()
+        ))
+    })?;
+    // `SecretKey::from_bytes` clones the 32 bytes into its scalar; the
+    // scalar is itself zeroized on `SecretKey::drop`. So even when this
+    // function exits, no readable copy of the secret remains on the
+    // Rust side.
+    let sk = SecretKey::from_bytes(secret_arr).map_err(err_to_js)?;
     let ring = parse_ring(ring_hex)?;
     let proof = crate::sign_vote(&sk, vote, election_id, &ring).map_err(err_to_js)?;
 
@@ -68,9 +126,11 @@ pub fn sign_vote_wasm(
 
 /// Browser-facing version of [`crate::verify_vote`].
 ///
-/// Returns a plain `bool`. Any input parsing error is mapped to
-/// `false`, because from the host's point of view "not a valid proof"
-/// and "not a parseable proof" are the same answer: reject.
+/// No secret material is involved; everything is hex (or `&[u8]` for
+/// the ballot). Returns a plain `bool`. Any input parsing error is
+/// mapped to `false`, because from the host's point of view "not a
+/// valid proof" and "not a parseable proof" are the same answer:
+/// reject.
 #[wasm_bindgen]
 pub fn verify_vote_wasm(
     vote: &[u8],

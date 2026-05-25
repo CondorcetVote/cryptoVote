@@ -180,8 +180,11 @@ and pass the resulting bytes everywhere afterwards:
 const ballotBytes = new TextEncoder().encode(JSON.stringify(form));
 const electionId  = "550e8400-e29b-41d4-a716-446655440000"; // plain JS string
 const [sigHex, tagHex] = sign_vote_wasm(
-    secretHex, ballotBytes, electionId, ringHex,
+    secretBytes, ballotBytes, electionId, ringHex,
 );
+// `secretBytes` is the `Uint8Array` returned by `generate_identity_wasm`
+// (or read back from your store). Wipe it with `secretBytes.fill(0)`
+// as soon as you no longer need it in memory.
 
 // Send `ballotBytes` (the same Uint8Array), `sigHex` and `tagHex`
 // to the host. The host stores `ballotBytes` verbatim — it must
@@ -241,18 +244,39 @@ await init();
 ### Operation A — generate an identity
 
 ```js
-const [secretHex, publicHex] = generate_identity_wasm();
+// The secret comes back as a `Uint8Array` (32 raw bytes); the public
+// key as a hex string. The asymmetry is deliberate: a JS string is
+// immutable, so once a secret has been turned into one it cannot be
+// erased from the JS heap until the GC eventually collects it. A
+// `Uint8Array` is a mutable buffer the caller can wipe explicitly with
+// `.fill(0)` once the secret has been used or persisted.
+const [secretBytes, publicHex] = generate_identity_wasm();
 
-// `secretHex` must stay on the voter's device. The natural store is
-// localStorage / IndexedDB, encrypted with a passphrase if you care.
-// `publicHex` is what the registrar adds to the authorised ring.
-localStorage.setItem("voter_secret", secretHex);
+// 1. Persist `secretBytes` wherever you want it to live across
+//    sessions. The library does not care which store you pick.
+await persistVoterSecret(secretBytes);
+
+// 2. Register the public key with the host.
 await fetch("/api/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ public_key: publicHex }),
 });
+
+// 3. Wipe the in-memory copy. After this point the only readable
+//    instance of the secret is whatever your `persistVoterSecret`
+//    produced — nothing is sitting around in the JS heap.
+secretBytes.fill(0);
 ```
+
+> **Note on the threat model.** Wiping the JS-side `Uint8Array` does
+> not protect against XSS / a malicious script running *while the
+> secret is still loaded*. What it does protect against is post-hoc
+> memory inspection: core dumps, devtools snapshots taken later, swap
+> partitions, extensions that scan page memory periodically. The
+> window of exposure is reduced to the smallest interval the caller
+> can manage. The library does its share by `Zeroizing` every
+> Rust-side copy of the secret automatically.
 
 ### Operation B — sign a ballot
 
@@ -285,17 +309,31 @@ const electionId = "550e8400-e29b-41d4-a716-446655440000";
 //    the 32-byte compressed Ristretto encoding rendered as hex.
 const ring = await fetch("/api/election/ring").then(r => r.json());
 
-// 4. Sign. `sign_vote_wasm` throws (rejects in JS) on bad inputs
-//    (empty vote, empty election ID, signer not in the ring, …) so
-//    wrap it in try/catch if you want to surface errors to the user.
-const [signatureHex, keyImageHex] = sign_vote_wasm(
-    localStorage.getItem("voter_secret"),
-    ballotBytes,
-    electionId,
-    ring,
-);
+// 4. Read the secret bytes back from wherever you persisted them.
+//    `sign_vote_wasm` takes a `Uint8Array` of length 32. Wrap the call
+//    in try/finally so the in-memory copy of the secret is wiped even
+//    on error.
+const secretBytes = await loadVoterSecret();
+let signatureHex, keyImageHex;
+try {
+    // `sign_vote_wasm` throws on bad inputs (empty vote, empty election
+    // ID, secret of the wrong length, signer not in the ring, …). The
+    // Rust side wraps the incoming bytes in `Zeroizing` so the WASM
+    // linear-memory copy is wiped on return.
+    [signatureHex, keyImageHex] = sign_vote_wasm(
+        secretBytes,
+        ballotBytes,
+        electionId,
+        ring,
+    );
+} finally {
+    // 5. Wipe the JS-side copy of the secret as soon as signing is
+    //    done. The `Uint8Array` is the only place the secret lived in
+    //    the JS heap; after `.fill(0)` it is unreadable.
+    secretBytes.fill(0);
+}
 
-// 5. Send the proof + the raw bytes to the host. Use a multipart or
+// 6. Send the proof + the raw bytes to the host. Use a multipart or
 //    binary-safe body so the bytes survive the trip unchanged.
 const form = new FormData();
 form.append("election_id", electionId);

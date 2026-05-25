@@ -116,6 +116,24 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
+# `wasm-pack` runs `wasm-opt` after rustc to shrink the bundle. The
+# bundled `wasm-opt` validator runs in MVP-only mode by default and
+# rejects post-MVP instructions that modern rustc emits unconditionally
+# (notably `memory.fill` from the bulk-memory proposal, used heavily
+# by `zeroize` and Rust's own memset lowering). We have to opt back
+# into the feature set rustc actually targets, otherwise the wasm-pack
+# step fails with `[wasm-validator error] ... Bulk memory operations
+# require bulk memory [--enable-bulk-memory]`.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = [
+    "-Oz",
+    "--enable-bulk-memory",
+    "--enable-nontrapping-float-to-int",
+    "--enable-sign-ext",
+    "--enable-mutable-globals",
+    "--enable-reference-types",
+]
+
 # Treat the `fuzz/` directory as a separate package: cargo-fuzz needs
 # nightly + `libfuzzer-sys`, neither of which should leak into the
 # default `cargo build` graph. The fuzz package has its own

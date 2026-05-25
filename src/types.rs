@@ -18,8 +18,11 @@
 //! and the little-endian canonical encoding for scalars.
 
 use crate::error::{Error, Result};
+use core::fmt;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
+use curve25519_dalek::traits::IsIdentity;
+use zeroize::Zeroize;
 
 /// A voter's public identity. Safe to publish.
 ///
@@ -51,6 +54,9 @@ impl PublicKey {
     pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self> {
         let compressed = CompressedRistretto::from_slice(bytes).map_err(|_| Error::InvalidPoint)?;
         let point = compressed.decompress().ok_or(Error::InvalidPoint)?;
+        if point.is_identity() {
+            return Err(Error::InvalidIdentityPoint);
+        }
         Ok(PublicKey { point })
     }
 
@@ -79,9 +85,21 @@ impl PublicKey {
 /// Internally a Ristretto255 scalar; externally 32 bytes. Treat the
 /// encoded form with the same care as any other private key — it should
 /// never be transmitted off the voter's device.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SecretKey {
     pub(crate) scalar: Scalar,
+}
+
+impl fmt::Debug for SecretKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SecretKey(..)")
+    }
+}
+
+impl Drop for SecretKey {
+    fn drop(&mut self) {
+        self.scalar.zeroize();
+    }
 }
 
 impl SecretKey {
@@ -108,6 +126,9 @@ impl SecretKey {
         // strings represent the same key.
         let scalar = Option::<Scalar>::from(Scalar::from_canonical_bytes(*bytes))
             .ok_or(Error::InvalidScalar)?;
+        if scalar == Scalar::ZERO {
+            return Err(Error::InvalidSecretKey);
+        }
         Ok(SecretKey { scalar })
     }
 
@@ -169,6 +190,9 @@ impl KeyImage {
     pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self> {
         let compressed = CompressedRistretto::from_slice(bytes).map_err(|_| Error::InvalidPoint)?;
         let point = compressed.decompress().ok_or(Error::InvalidPoint)?;
+        if point.is_identity() {
+            return Err(Error::InvalidIdentityPoint);
+        }
         Ok(KeyImage { point })
     }
 
@@ -288,4 +312,46 @@ pub struct VoteProof {
     pub signature: Signature,
     /// The unique-per-secret-key linking tag.
     pub key_image: KeyImage,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const IDENTITY_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    #[test]
+    fn rejects_zero_secret_key() {
+        let zero = [0u8; 32];
+        assert_eq!(
+            SecretKey::from_bytes(&zero).unwrap_err(),
+            Error::InvalidSecretKey
+        );
+        assert_eq!(
+            SecretKey::from_hex(IDENTITY_HEX).unwrap_err(),
+            Error::InvalidSecretKey
+        );
+    }
+
+    #[test]
+    fn rejects_identity_points_at_api_boundary() {
+        assert_eq!(
+            PublicKey::from_hex(IDENTITY_HEX).unwrap_err(),
+            Error::InvalidIdentityPoint
+        );
+        assert_eq!(
+            KeyImage::from_hex(IDENTITY_HEX).unwrap_err(),
+            Error::InvalidIdentityPoint
+        );
+    }
+
+    #[test]
+    fn secret_key_debug_is_redacted() {
+        let sk =
+            SecretKey::from_hex("0100000000000000000000000000000000000000000000000000000000000000")
+                .unwrap();
+        let debug = format!("{sk:?}");
+        assert_eq!(debug, "SecretKey(..)");
+        assert!(!debug.contains("1"));
+    }
 }

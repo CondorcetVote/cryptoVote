@@ -41,11 +41,15 @@ nazgul = { version = "2.1", default-features = false, features = ["std"] }
 # Ristretto base point directly in our code, so the crate must appear
 # as a *direct* dependency (Cargo only puts direct deps in the extern
 # prelude — transitive deps are compiled but cannot be `use`d). The
-# features `digest` / `rand_core` / `alloc` / `zeroize` are already
-# enabled by nazgul's `std` feature and unified by Cargo, so we leave
-# them off here. Pinned to the same major version nazgul uses, so the
-# `Scalar` and `RistrettoPoint` types are the same end-to-end.
-curve25519-dalek = "4"
+# features `digest` / `rand_core` / `alloc` are already enabled by
+# nazgul's `std` feature and unified by Cargo. We enable `zeroize`
+# directly so `SecretKey` can wipe its scalar on drop.
+# Pinned to the same major version nazgul uses, so the `Scalar` and
+# `RistrettoPoint` types are the same end-to-end.
+curve25519-dalek = { version = "4", features = ["zeroize"] }
+
+# Wipe secret scalars when their wrapper leaves scope.
+zeroize = "1"
 
 # Hash function (cryptographic core of every challenge in the protocol).
 # Blake2b-512 produces a 64-byte digest natively, which is exactly what

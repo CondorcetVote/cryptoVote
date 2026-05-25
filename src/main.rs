@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! cryptovote keygen
-//! cryptovote sign   --secret <hex> --vote <text> --election-id <text> --ring <file>
+//! cryptovote sign   --secret-file <file> --vote <text> --election-id <text> --ring <file>
 //! cryptovote verify --vote <text> --election-id <text> \
 //!                   --signature <hex> --key-image <hex> --ring <file>
 //! ```
@@ -30,7 +30,7 @@ use std::process::ExitCode;
 #[command(
     name = "cryptovote",
     version,
-    about = "Linkable ring signatures for verifiable voting (Ristretto255 + Blake3)."
+    about = "Linkable ring signatures for verifiable voting (Ristretto255 + Blake2b-512)."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -44,9 +44,22 @@ enum Command {
 
     /// Sign a ballot.
     Sign {
-        /// Hex-encoded secret key.
-        #[arg(long)]
-        secret: String,
+        /// Hex-encoded secret key. Pass `-` to read from stdin.
+        #[arg(
+            long,
+            value_name = "HEX|-",
+            conflicts_with = "secret_file",
+            required_unless_present = "secret_file"
+        )]
+        secret: Option<String>,
+        /// File containing the hex-encoded secret key.
+        #[arg(
+            long = "secret-file",
+            value_name = "FILE",
+            conflicts_with = "secret",
+            required_unless_present = "secret"
+        )]
+        secret_file: Option<PathBuf>,
         /// Ballot text. Pass `-` to read from stdin.
         #[arg(long)]
         vote: String,
@@ -105,10 +118,17 @@ fn dispatch(cmd: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
 
         Command::Sign {
             secret,
+            secret_file,
             vote,
             election_id,
             ring,
         } => {
+            if secret.as_deref() == Some("-") && vote == "-" {
+                return Err(
+                    "cannot read both --secret and --vote from stdin; use --secret-file".into(),
+                );
+            }
+            let secret = read_secret(secret.as_deref(), secret_file.as_ref())?;
             let sk = SecretKey::from_hex(secret.trim())?;
             let vote_bytes = read_vote(&vote)?;
             let ring = read_ring(&ring)?;
@@ -142,6 +162,23 @@ fn dispatch(cmd: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(ExitCode::from(1))
             }
         }
+    }
+}
+
+/// Resolve the signing secret from a literal hex value, stdin, or a file.
+fn read_secret(
+    secret: Option<&str>,
+    secret_file: Option<&PathBuf>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    match (secret, secret_file) {
+        (Some("-"), None) => {
+            let mut buf = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+            Ok(buf)
+        }
+        (Some(s), None) => Ok(s.to_owned()),
+        (None, Some(path)) => Ok(fs::read_to_string(path)?),
+        _ => Err("provide exactly one of --secret or --secret-file".into()),
     }
 }
 

@@ -76,10 +76,6 @@ jobs:
   audit:
     name: Security audit (cargo-audit)
     runs-on: ubuntu-latest
-    # Don't gate the whole CI on transitive-dep CVEs. The check still
-    # runs and surfaces in the PR status, but a yanked-but-unexploitable
-    # transitive crate should not block a fix from merging.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
 

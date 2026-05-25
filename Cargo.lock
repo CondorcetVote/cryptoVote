@@ -160,6 +160,7 @@ dependencies = [
  "nazgul",
  "rand",
  "wasm-bindgen",
+ "zeroize",
 ]
 
 [[package]]

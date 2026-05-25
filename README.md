@@ -119,8 +119,9 @@ $ cryptovote keygen
 secret=…
 public=…
 
-# Sign a ballot. `ring.txt` is one hex public key per line.
-$ cryptovote sign --secret <hex> --vote "option-A" \
+# Sign a ballot. `ring.txt` is one hex public key per line; keep the
+# secret in a file or pass `--secret -` to read it from stdin.
+$ cryptovote sign --secret-file secret.hex --vote "option-A" \
     --election-id "election-2026-05" --ring ring.txt
 signature=…
 key_image=…
@@ -172,7 +173,7 @@ newlines, or is binary:
 
 ```bash
 cat ballot.json | cryptovote sign \
-    --secret <hex> --vote - --election-id "election-2026-05" --ring ring.txt
+  --secret-file secret.hex --vote - --election-id "election-2026-05" --ring ring.txt
 
 cat ballot.json | cryptovote verify --vote - \
     --election-id "election-2026-05" \

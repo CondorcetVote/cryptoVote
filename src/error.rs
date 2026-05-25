@@ -30,8 +30,13 @@ pub enum Error {
     },
     /// 32 bytes that do not represent a valid Ristretto255 point.
     InvalidPoint,
+    /// A Ristretto255 point decoded correctly but is the identity point,
+    /// which is not a valid public protocol value.
+    InvalidIdentityPoint,
     /// 32 bytes that do not represent a canonical scalar (mod ℓ).
     InvalidScalar,
+    /// A scalar decoded correctly but is not usable as a secret key.
+    InvalidSecretKey,
     /// The hex string handed to a `*_from_hex` constructor could not be
     /// decoded.
     InvalidHex,
@@ -71,7 +76,9 @@ impl fmt::Display for Error {
                 "invalid length for {what}: expected {expected} bytes, got {got}"
             ),
             Error::InvalidPoint => f.write_str("bytes do not encode a valid Ristretto255 point"),
+            Error::InvalidIdentityPoint => f.write_str("point must not be the Ristretto identity"),
             Error::InvalidScalar => f.write_str("bytes do not encode a canonical scalar"),
+            Error::InvalidSecretKey => f.write_str("secret key must be a non-zero scalar"),
             Error::InvalidHex => f.write_str("input is not valid hexadecimal"),
             Error::SignerNotInRing => {
                 f.write_str("signer's public key is not part of the authorised ring")

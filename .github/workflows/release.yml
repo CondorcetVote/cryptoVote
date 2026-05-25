@@ -11,9 +11,18 @@
 #   2. cryptovote-x86_64-unknown-linux-musl.tar.gz  — x64 Linux CLI (fully static musl)
 #   3. cryptovote-aarch64-unknown-linux-gnu.tar.gz  — ARM64 Linux CLI (glibc-linked)
 #   4. cryptovote-aarch64-unknown-linux-musl.tar.gz — ARM64 Linux CLI (fully static musl)
-#   5. cryptovote-aarch64-apple-darwin.tar.gz       — Apple Silicon macOS CLI
-#   6. crypto_vote-wasm-browser.tar.gz              — wasm-pack bundle for browsers
-#   7. crypto_vote-wasm32-wasip1.tar.gz             — server-side WASM (WASI preview 1)
+#   5. cryptovote-riscv64gc-unknown-linux-gnu.tar.gz — RISC-V 64 Linux CLI (glibc-linked)
+#   6. cryptovote-aarch64-apple-darwin.tar.gz       — Apple Silicon macOS CLI
+#   7. crypto_vote-wasm-browser.tar.gz              — wasm-pack bundle for browsers
+#   8. crypto_vote-wasm32-wasip1.tar.gz             — server-side WASM (WASI preview 1)
+#
+# Not shipped here:
+#   - riscv64gc-unknown-linux-musl: rustup's `rust-std` for this Tier 2
+#     target does not include a complete musl libgcc_s, so a static build
+#     with `rust-lld` fails to link. The workaround is `cross` (Docker)
+#     or a hand-built musl-cross-riscv64 toolchain, neither of which is
+#     worth the CI complexity for this project. The glibc variant covers
+#     practical RISC-V Linux deployments.
 #
 # Note on item 4: `wasm64-unknown-unknown` is a Tier 3 target requiring
 # nightly Rust, and several transitive dependencies (notably
@@ -68,6 +77,13 @@ jobs:
             # below selects rust-lld for this triple specifically.
             os: ubuntu-latest
             apt: ""
+          # --- RISC-V 64 Linux (glibc only — see file header for why) ---
+          - target: riscv64gc-unknown-linux-gnu
+            # Tier 2 with host tools. Same pattern as aarch64-gnu: an apt
+            # cross-toolchain provides the linker driver (`riscv64-linux-
+            # gnu-gcc`) plus the matching crt and libc. No QEMU needed.
+            os: ubuntu-latest
+            apt: "gcc-riscv64-linux-gnu"
           # --- Apple Silicon macOS ---
           - target: aarch64-apple-darwin
             # macos-latest is Apple Silicon (M-series), so this build is
@@ -104,6 +120,7 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
+          CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
         run: cargo build --release --locked --target ${{ matrix.target }} --bin cryptovote
 
       - name: Package binary

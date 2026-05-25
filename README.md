@@ -119,7 +119,7 @@ deterministically.
 
 ## Build matrix
 
-The release workflow produces seven artefacts; the same commands work
+The release workflow produces eight artefacts; the same commands work
 locally. Pick the triple that matches your need, install its one-off
 prerequisite, then run the matching build command. Edition 2024 implies
 Rust ≥ 1.85; CI tracks `stable`.
@@ -130,9 +130,15 @@ Rust ≥ 1.85; CI tracks `stable`.
 | `x86_64-unknown-linux-musl` | Linux x64 | `musl-tools` (provides `musl-gcc`) | **static ELF**, ~800 KB |
 | `aarch64-unknown-linux-gnu` | Linux x64 or arm | `gcc-aarch64-linux-gnu` cross-toolchain | dynamic ELF |
 | `aarch64-unknown-linux-musl` | Linux x64 or arm | none — uses `rust-lld` | **static ELF** |
+| `riscv64gc-unknown-linux-gnu` | Linux x64 or arm | `gcc-riscv64-linux-gnu` cross-toolchain | dynamic ELF |
 | `aarch64-apple-darwin` | macOS arm (M-series) | Xcode Command Line Tools | Mach-O |
 | `wasm32-unknown-unknown` | any | `cargo install wasm-pack` | ES-module bundle |
 | `wasm32-wasip1` | any | none — uses `rust-lld` | WASI module |
+
+> No `riscv64gc-unknown-linux-musl` row: rustup's bundle for that Tier 2
+> target is missing parts of musl libgcc_s, so `rust-lld` cannot link
+> statically. For a static RISC-V build, use
+> [`cross`](https://github.com/cross-rs/cross) (Docker-based) instead.
 
 > Install commands below are **Debian/Ubuntu** (`apt`); adapt to your
 > distribution (`dnf`, `pacman`, `zypper`, `brew`, …) or use
@@ -151,7 +157,7 @@ cargo build --release --locked --target <TRIPLE> --bin cryptovote
 # → target/<TRIPLE>/release/cryptovote
 ```
 
-Two Linux ARM64 rows need a linker selector — set it in the
+Three cross-Linux rows need a linker selector — set it in the
 environment, then run the same command:
 
 ```bash
@@ -160,6 +166,9 @@ export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 
 # aarch64-unknown-linux-musl  (no apt package needed)
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld
+
+# riscv64gc-unknown-linux-gnu  (after `apt install gcc-riscv64-linux-gnu`)
+export CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER=riscv64-linux-gnu-gcc
 ```
 
 Browser WASM uses `wasm-pack` (which wraps `cargo build` and emits JS

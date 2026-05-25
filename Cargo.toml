@@ -71,9 +71,17 @@ clap = { version = "4", features = ["derive"], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 js-sys = { version = "0.3", optional = true }
 
-# `getrandom` is what `rand`'s `OsRng` calls into. On wasm32 we need the
-# `js` feature so that randomness comes from `window.crypto`. We also gate
-# this dependency behind the `wasm` feature so the native build stays lean.
+# `getrandom` is what `rand`'s `OsRng` calls into. On wasm32 we need
+# the `js` feature so that randomness comes from `window.crypto`. We
+# also gate this dependency behind the `wasm` feature so the native
+# build stays lean.
+#
+# Pinned to 0.2 on purpose: `rand 0.8` (pulled in by `nazgul 2.1` via
+# `rand_core 0.6`) calls `getrandom 0.2`. Bumping to 0.3 or 0.4 would
+# leave a second copy of getrandom in the tree, and the `js` feature
+# would land on the version that `rand` does *not* use — silently
+# breaking the browser RNG. The whole chain can move forward only when
+# nazgul releases a version targeting `rand_core 0.9`+.
 getrandom = { version = "0.2", features = ["js"], optional = true }
 
 # Release profile tuned for small, fast WebAssembly artefacts. `opt-level

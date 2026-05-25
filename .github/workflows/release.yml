@@ -7,11 +7,13 @@
 #
 # Artefacts produced:
 #
-#   1. cryptovote-x86_64-unknown-linux-gnu.tar.gz   — native x64 Linux CLI (glibc-linked)
-#   2. cryptovote-x86_64-unknown-linux-musl.tar.gz  — native x64 Linux CLI (fully static musl)
-#   3. cryptovote-aarch64-unknown-linux-gnu.tar.gz  — native ARM64 / ARMv9 Linux CLI
-#   4. crypto_vote-wasm-browser.tar.gz              — wasm-pack bundle for browsers
-#   5. crypto_vote-wasm32-wasip1.tar.gz             — server-side WASM (WASI preview 1)
+#   1. cryptovote-x86_64-unknown-linux-gnu.tar.gz   — x64 Linux CLI (glibc-linked)
+#   2. cryptovote-x86_64-unknown-linux-musl.tar.gz  — x64 Linux CLI (fully static musl)
+#   3. cryptovote-aarch64-unknown-linux-gnu.tar.gz  — ARM64 Linux CLI (glibc-linked)
+#   4. cryptovote-aarch64-unknown-linux-musl.tar.gz — ARM64 Linux CLI (fully static musl)
+#   5. cryptovote-aarch64-apple-darwin.tar.gz       — Apple Silicon macOS CLI
+#   6. crypto_vote-wasm-browser.tar.gz              — wasm-pack bundle for browsers
+#   7. crypto_vote-wasm32-wasip1.tar.gz             — server-side WASM (WASI preview 1)
 #
 # Note on item 4: `wasm64-unknown-unknown` is a Tier 3 target requiring
 # nightly Rust, and several transitive dependencies (notably
@@ -33,36 +35,48 @@ env:
 jobs:
   build-native:
     name: Native — ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
-      # Don't cancel the ARM build when x86 fails (or vice versa); we
-      # want to see every breakage in one CI run.
+      # Don't cancel an ARM build when an x86 row fails (or vice versa);
+      # we want to see every breakage in one CI run.
       fail-fast: false
       matrix:
         include:
+          # --- Linux glibc ---
           - target: x86_64-unknown-linux-gnu
-            cross_apt: ""
-            linker: ""
+            os: ubuntu-latest
+            apt: ""
           - target: aarch64-unknown-linux-gnu
-            # GitHub-hosted x86 runners can produce ARM64 binaries via
-            # the standard gcc cross-compiler — no QEMU, no `cross`. We
-            # tell Cargo to use that linker for this target.
-            #
             # ARMv9-A cores (Cortex-A510, A710, A720, X1+ …) are 64-bit
-            # ARM and use the `aarch64` ISA, so this target is the right
-            # answer for "native armv9": there is no separate Rust
-            # triple for ARMv9 because ARMv9-A *is* AArch64.
-            cross_apt: "gcc-aarch64-linux-gnu"
-            linker: "aarch64-linux-gnu-gcc"
+            # ARM and use the `aarch64` ISA, so this triple covers
+            # "native armv9" too — there is no separate Rust triple for
+            # ARMv9 because ARMv9-A *is* AArch64. GitHub-hosted x86
+            # runners produce ARM64 glibc binaries via the standard gcc
+            # cross-compiler — no QEMU, no `cross`.
+            os: ubuntu-latest
+            apt: "gcc-aarch64-linux-gnu"
+          # --- Linux musl (fully static, runs on any distro) ---
           - target: x86_64-unknown-linux-musl
-            # Static-musl variant of the x86_64 CLI: produces a fully
-            # self-contained binary with no dynamic libc dependency, so
-            # it runs on any Linux distribution regardless of its glibc
-            # version. `musl-tools` provides `musl-gcc`, which Cargo
-            # picks up automatically for this target — no explicit
-            # linker env var needed.
-            cross_apt: "musl-tools"
-            linker: ""
+            # `musl-tools` provides `musl-gcc`, which Cargo picks up
+            # automatically for the *-linux-musl host triple.
+            os: ubuntu-latest
+            apt: "musl-tools"
+          - target: aarch64-unknown-linux-musl
+            # No apt cross-toolchain needed: `rust-lld` (bundled with
+            # rustup) handles cross-arch linking, and rustup ships a
+            # precompiled musl libc for this target. The linker env var
+            # below selects rust-lld for this triple specifically.
+            os: ubuntu-latest
+            apt: ""
+          # --- Apple Silicon macOS ---
+          - target: aarch64-apple-darwin
+            # macos-latest is Apple Silicon (M-series), so this build is
+            # native — the Xcode CLT preinstalled on the runner provides
+            # the linker. Intel macs (`x86_64-apple-darwin`) are not
+            # shipped: GitHub-hosted Intel macOS runners were retired and
+            # this project has no demand for a Rosetta-only artefact.
+            os: macos-latest
+            apt: ""
     steps:
       - uses: actions/checkout@v6
 
@@ -71,23 +85,25 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross-compile linker
-        if: matrix.cross_apt != ''
+      - name: Install cross-compile linker (apt)
+        # Skipped automatically on macOS rows (no `apt:` value) and on
+        # the aarch64-musl row (uses rust-lld instead of a system gcc).
+        if: matrix.apt != ''
         run: |
           sudo apt-get update
-          sudo apt-get install -y ${{ matrix.cross_apt }}
+          sudo apt-get install -y ${{ matrix.apt }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
       - name: Build release binary
-        # Setting CARGO_TARGET_AARCH64_..._LINKER unconditionally is
-        # harmless for the x86 row — Cargo only consults the var that
-        # matches the active target triple, so the empty value passed on
-        # x86 is never read.
+        # Each CARGO_TARGET_*_LINKER var is only consulted when its
+        # triple is the active target, so setting all of them at once
+        # is harmless on the rows that don't need them.
         env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
         run: cargo build --release --locked --target ${{ matrix.target }} --bin cryptovote
 
       - name: Package binary

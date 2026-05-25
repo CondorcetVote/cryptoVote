@@ -119,142 +119,75 @@ deterministically.
 
 ## Build matrix
 
-The release workflow produces five artefacts. The same commands work
-locally — pick the row that matches what you actually need.
+The release workflow produces seven artefacts; the same commands work
+locally. Pick the triple that matches your need, install its one-off
+prerequisite, then run the matching build command. Edition 2024 implies
+Rust ≥ 1.85; CI tracks `stable`.
 
-| Target | Use case | Extra toolchain (beyond `rustup target add`) |
-|---|---|---|
-| `x86_64-unknown-linux-gnu` | Native x64 Linux CLI (glibc-linked) | a working system C linker (any dev box has one) |
-| `x86_64-unknown-linux-musl` | Fully static x64 Linux CLI (any distro) | a musl C toolchain providing `musl-gcc` |
-| `aarch64-unknown-linux-gnu` | Native ARM64 / ARMv9 Linux CLI | a cross-toolchain providing `aarch64-linux-gnu-gcc` |
-| `wasm32-unknown-unknown` (via `wasm-pack`) | Browser ES module | `cargo install wasm-pack` |
-| `wasm32-wasip1` | Server-side WASM (wasmtime, wasmer, …) | none — `rust-lld` is used automatically |
+| Triple | Build host | One-off setup | Output |
+|---|---|---|---|
+| `x86_64-unknown-linux-gnu` | Linux x64 | system C linker (any dev box has one) | dynamic ELF, ~700 KB |
+| `x86_64-unknown-linux-musl` | Linux x64 | `musl-tools` (provides `musl-gcc`) | **static ELF**, ~800 KB |
+| `aarch64-unknown-linux-gnu` | Linux x64 or arm | `gcc-aarch64-linux-gnu` cross-toolchain | dynamic ELF |
+| `aarch64-unknown-linux-musl` | Linux x64 or arm | none — uses `rust-lld` | **static ELF** |
+| `aarch64-apple-darwin` | macOS arm (M-series) | Xcode Command Line Tools | Mach-O |
+| `wasm32-unknown-unknown` | any | `cargo install wasm-pack` | ES-module bundle |
+| `wasm32-wasip1` | any | none — uses `rust-lld` | WASI module |
 
-The crate uses Rust edition 2024 (implicit toolchain floor: 1.85). CI
-tracks `stable`; no stricter MSRV is advertised because it would be an
-unverified promise.
+> Install commands below are **Debian/Ubuntu** (`apt`); adapt to your
+> distribution (`dnf`, `pacman`, `zypper`, `brew`, …) or use
+> [`cross`](https://github.com/cross-rs/cross) for a Docker-based path
+> that needs nothing on the host. CI runs on `ubuntu-latest`, which is
+> why the upstream pipeline uses apt.
 
-> The install commands below are **Debian/Ubuntu** examples (`apt`).
-> Substitute your distribution's package manager: `dnf` on Fedora,
-> `pacman` on Arch, `zypper` on openSUSE, `brew` on macOS, etc. The
-> package names usually map directly — search for `musl-gcc` /
-> `aarch64-linux-gnu-gcc` on your distro to find the right one. The
-> CI workflow runs on `ubuntu-latest`, which is why upstream artefacts
-> use the apt path.
+### Build commands
 
-### Native x86_64 Linux CLI
-
-Prerequisite: a working system C linker. Any dev machine already has
-one (`build-essential` on Debian/Ubuntu, `base-devel` on Arch, Xcode CLT
-on macOS, …). Nothing crypto_vote-specific to install.
+Standard template — works as-is for `x86_64-unknown-linux-gnu`,
+`x86_64-unknown-linux-musl` (after `apt install musl-tools`) and
+`aarch64-apple-darwin` (on a macOS host):
 
 ```bash
-cargo build --release --locked \
-    --target x86_64-unknown-linux-gnu --bin cryptovote
-# → target/x86_64-unknown-linux-gnu/release/cryptovote
+cargo build --release --locked --target <TRIPLE> --bin cryptovote
+# → target/<TRIPLE>/release/cryptovote
 ```
 
-### Static x86_64 Linux CLI (musl)
-
-Produces a fully self-contained binary with no dynamic libc dependency,
-so the same file runs on any Linux distribution regardless of its
-installed glibc version. Slightly larger than the glibc build (~10–15 %)
-in exchange for portability.
-
-Prerequisite: a musl C toolchain that provides `musl-gcc`. Cargo
-auto-detects it for this target — no env var needed.
+Two Linux ARM64 rows need a linker selector — set it in the
+environment, then run the same command:
 
 ```bash
-# Debian / Ubuntu — adjust for your distro.
-sudo apt-get install -y musl-tools          # Debian/Ubuntu
-#   Fedora:  sudo dnf install musl-gcc
-#   Arch:    sudo pacman -S musl
-#   macOS:   brew install FiloSottile/musl-cross/musl-cross
+# aarch64-unknown-linux-gnu  (after `apt install gcc-aarch64-linux-gnu`)
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 
-cargo build --release --locked \
-    --target x86_64-unknown-linux-musl --bin cryptovote
-# → target/x86_64-unknown-linux-musl/release/cryptovote
+# aarch64-unknown-linux-musl  (no apt package needed)
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld
 ```
 
-The resulting binary has no `.so` dependencies (`ldd` reports
-"statically linked"); copy it anywhere, no install step needed.
-
-### Native ARM64 Linux CLI
-
-ARMv9-A cores (Cortex-A510, A710, A720, X1+ …) are 64-bit ARM and use
-the AArch64 ISA, so this is also the right target for "native ARMv9"
-— there is no separate Rust triple for ARMv9 because ARMv9-A *is*
-AArch64.
-
-Prerequisite: a cross-toolchain that provides an `aarch64-linux-gnu-gcc`
-binary (used as the linker driver) plus ARM64 glibc + crt files.
+Browser WASM uses `wasm-pack` (which wraps `cargo build` and emits JS
+glue alongside the `.wasm`):
 
 ```bash
-# Debian / Ubuntu — adjust for your distro.
-sudo apt-get install -y gcc-aarch64-linux-gnu   # Debian/Ubuntu
-#   Fedora:  sudo dnf install gcc-aarch64-linux-gnu
-#   Arch:    sudo pacman -S aarch64-linux-gnu-gcc       (from AUR)
-#   macOS:   brew install aarch64-linux-gnu-gcc          (from messense/macos-cross-toolchains)
-
-# Tell Cargo which linker to use for the target triple.
-CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
-cargo build --release --locked \
-    --target aarch64-unknown-linux-gnu --bin cryptovote
-# → target/aarch64-unknown-linux-gnu/release/cryptovote
+wasm-pack build --release --target web --out-dir pkg-browser \
+    -- --no-default-features --features wasm --locked
+# → pkg-browser/{crypto_vote.js, crypto_vote_bg.wasm, …}
 ```
 
-If a packaged cross-toolchain is not available on your platform, the
-[`cross`](https://github.com/cross-rs/cross) tool (Docker-based) builds
-the same artefact without touching your host:
+`--target web` emits an ES module you can `import` from a static page;
+switch to `--target bundler` for Webpack/Vite (signatures unchanged).
+`--no-default-features` drops `clap`; `--features wasm` enables
+`wasm-bindgen`, `js-sys`, and the `getrandom/wasm_js` backend so
+randomness comes from `Crypto.getRandomValues`.
+
+Server-side WASM is a plain library build with **no** features
+enabled — `getrandom` autoselects WASI's `random_get`:
 
 ```bash
-cargo install cross
-cross build --release --locked --target aarch64-unknown-linux-gnu --bin cryptovote
-```
-
-### Browser WASM (`wasm32-unknown-unknown` via `wasm-pack`)
-
-```bash
-wasm-pack build \
-    --release \
-    --target web \
-    --out-dir pkg-browser \
-    -- \
-    --no-default-features \
-    --features wasm \
-    --locked
-# → pkg-browser/{crypto_vote.js, crypto_vote_bg.wasm, ...}
-```
-
-`--target web` emits ES-module glue suitable for `import` from a
-static page. Replace by `--target bundler` for Webpack / Vite — the
-exported function signatures are identical.
-
-`--no-default-features` drops the `cli` feature so `clap` and the
-binary entry point are not pulled into the WASM bundle.
-`--features wasm` enables `wasm-bindgen`, `js-sys`, and the
-`getrandom/wasm_js` backend so randomness comes from
-`Crypto.getRandomValues`.
-
-### Server-side WASM (`wasm32-wasip1`)
-
-```bash
-cargo build --release --locked \
-    --target wasm32-wasip1 --lib --no-default-features
+cargo build --release --locked --target wasm32-wasip1 --lib --no-default-features
 # → target/wasm32-wasip1/release/crypto_vote.wasm
 ```
 
-Important: the `wasm` feature is **off** here — the WASI build needs
-neither `wasm-bindgen` nor the browser-specific `getrandom` backend.
-On `wasm32-wasip1`, `getrandom` falls back automatically to WASI's
-`random_get`, so `SysRng` (used by `sign_vote` and
-`generate_identity`) works out of the box. The resulting `.wasm` is a
-plain WASI module any compliant runtime (wasmtime, wasmer, …) can
-load and call into.
-
-`wasm64-unknown-unknown` is a Tier 3 nightly-only target and several
-transitive dependencies do not yet advertise wasm64 support, which is
-why `wasm32-wasip1` is the documented server-side option.
+`wasm64-unknown-unknown` is a Tier 3 nightly-only target with poor
+dep support, which is why `wasm32-wasip1` is the documented
+server-side option.
 
 ## Using the library
 
@@ -370,9 +303,8 @@ function signatures are identical, only the import boilerplate changes.
 
 ### Build
 
-See the [Browser WASM](#browser-wasm-wasm32-unknown-unknown-via-wasm-pack)
-row in the build matrix above for the full command and flag breakdown.
-The short version, run from the crate root, is:
+See the [Build matrix](#build-matrix) above for the full command and
+flag breakdown. The short version, run from the crate root:
 
 ```bash
 wasm-pack build --target web -- --no-default-features --features wasm

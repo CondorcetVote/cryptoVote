@@ -9,8 +9,9 @@
 //!
 //! ```text
 //! cryptovote keygen
-//! cryptovote sign   --secret <hex> --vote <text> --ring <file>
-//! cryptovote verify --vote <text> --signature <hex> --key-image <hex> --ring <file>
+//! cryptovote sign   --secret <hex> --vote <text> --election-id <text> --ring <file>
+//! cryptovote verify --vote <text> --election-id <text> \
+//!                   --signature <hex> --key-image <hex> --ring <file>
 //! ```
 //!
 //! The ring file is a plain text file with one hex-encoded public key
@@ -47,6 +48,10 @@ enum Command {
         /// Ballot text. Pass `-` to read from stdin.
         #[arg(long)]
         vote: String,
+        /// Election identifier. Must be the same string the verifier
+        /// uses (otherwise the signature will not validate).
+        #[arg(long = "election-id")]
+        election_id: String,
         /// File containing one hex-encoded public key per line.
         #[arg(long)]
         ring: PathBuf,
@@ -57,6 +62,9 @@ enum Command {
         /// Ballot text. Pass `-` to read from stdin.
         #[arg(long)]
         vote: String,
+        /// Election identifier — same string the signer used.
+        #[arg(long = "election-id")]
+        election_id: String,
         /// Hex-encoded signature.
         #[arg(long)]
         signature: String,
@@ -96,12 +104,13 @@ fn dispatch(cmd: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
         Command::Sign {
             secret,
             vote,
+            election_id,
             ring,
         } => {
             let sk = SecretKey::from_hex(secret.trim())?;
             let vote_bytes = read_vote(&vote)?;
             let ring = read_ring(&ring)?;
-            let proof = sign_vote(&sk, &vote_bytes, &ring)?;
+            let proof = sign_vote(&sk, &vote_bytes, &election_id, &ring)?;
             println!("signature={}", proof.signature.to_hex());
             println!("key_image={}", proof.key_image.to_hex());
             Ok(ExitCode::SUCCESS)
@@ -109,6 +118,7 @@ fn dispatch(cmd: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
 
         Command::Verify {
             vote,
+            election_id,
             signature,
             key_image,
             ring,
@@ -119,7 +129,7 @@ fn dispatch(cmd: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
             // the ring length before we can parse the hex.
             let signature = Signature::from_hex(signature.trim(), ring.len())?;
             let key_image = KeyImage::from_hex(key_image.trim())?;
-            let ok = verify_vote(&vote_bytes, &signature, &key_image, &ring);
+            let ok = verify_vote(&vote_bytes, &election_id, &signature, &key_image, &ring);
             if ok {
                 println!("valid");
                 Ok(ExitCode::SUCCESS)

@@ -47,6 +47,16 @@ pub enum Error {
     /// The protocol's anonymity guarantees assume distinct members, and
     /// we refuse to silently de-duplicate.
     DuplicateRingMember,
+    /// `sign_vote` was called with a zero-byte ballot. The library has
+    /// no opinion on the payload format, but an empty payload is almost
+    /// always a caller bug (forgot to serialise the form, fed in the
+    /// wrong variable, …) so we surface it instead of silently signing
+    /// nothing.
+    EmptyVote,
+    /// `sign_vote` was called with a zero-byte election identifier.
+    /// Allowing it would defeat the whole point of binding signatures
+    /// to an election context, so we refuse early.
+    EmptyElectionId,
 }
 
 impl fmt::Display for Error {
@@ -72,6 +82,8 @@ impl fmt::Display for Error {
             Error::DuplicateRingMember => {
                 f.write_str("authorised ring contains a duplicate public key")
             }
+            Error::EmptyVote => f.write_str("ballot is empty"),
+            Error::EmptyElectionId => f.write_str("election identifier is empty"),
         }
     }
 }

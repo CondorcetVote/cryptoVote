@@ -24,6 +24,32 @@
 //! | B | Sign a ballot     | Voter's device (WASM in the browser) | [`sign_vote`] |
 //! | C | Validate a proof  | Host / server | [`verify_vote`] |
 //!
+//! ## Guardrails against misuse
+//!
+//! Two cheap protections are built into [`sign_vote`] and
+//! [`verify_vote`]:
+//!
+//!  - **Non-empty ballot and election identifier**: the library
+//!    refuses to sign a zero-byte vote, and silently rejects any proof
+//!    whose vote or election ID is empty at verification time. An
+//!    empty payload is almost always a caller bug.
+//!  - **Election binding**: every signature is bound to an
+//!    `election_id` byte string. A proof produced for election X
+//!    cannot validate for election Y, even if the ring and the secret
+//!    key are identical. The host should pass a stable per-election
+//!    identifier (UUID, slug, hash of an event configuration, …) for
+//!    every call.
+//!
+//! The library does **not** enforce one further protocol-level
+//! invariant the host is responsible for: the ring (the full set of
+//! authorised public keys) must be **frozen before voting opens** and
+//! stay composition-identical until the election closes. The ring is
+//! part of what gets hashed into every signature, so adding or
+//! removing a member mid-election invalidates every signature
+//! produced before the change. All voter identities must therefore be
+//! generated during the enrolment window. See the README for the
+//! details.
+//!
 //! ## Cryptographic choices
 //!
 //! - **Curve**: Ristretto255 (a prime-order group built on Curve25519).
@@ -65,13 +91,21 @@
 //!     charlie.public_key,
 //! ];
 //!
+//! let election_id = "550e8400-e29b-41d4-a716-446655440000"; // any stable string
+//! let ballot      = b"option-A";
+//!
 //! // Bob signs his ballot. The host never sees `bob.secret_key`.
-//! let ballot = b"option-A";
-//! let proof  = sign_vote(&bob.secret_key, ballot, &ring).unwrap();
+//! let proof = sign_vote(&bob.secret_key, ballot, election_id, &ring).unwrap();
 //!
 //! // The host: 1. would now check `proof.key_image` against its store,
 //! //           2. then asks the oracle.
-//! assert!(verify_vote(ballot, &proof.signature, &proof.key_image, &ring));
+//! assert!(verify_vote(
+//!     ballot,
+//!     election_id,
+//!     &proof.signature,
+//!     &proof.key_image,
+//!     &ring,
+//! ));
 //! ```
 
 pub mod error;

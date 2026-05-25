@@ -26,6 +26,24 @@
 //! by sorting the authorised list lexicographically by its compressed
 //! byte representation. Both sides do that independently, so neither
 //! has to trust the other's ordering.
+//!
+//! ## Election binding
+//!
+//! Every signature is bound to an `election_id` byte string. The bytes
+//! that actually go through Blake2b are
+//!
+//! ```text
+//!   len(election_id) (8 bytes, big-endian)
+//!   election_id
+//!   vote
+//! ```
+//!
+//! The fixed-width length prefix is what makes the construction
+//! unambiguous — without it, `(eid="AB", vote="C")` and
+//! `(eid="A", vote="BC")` would hash identically. With it, a signature
+//! produced for one election never validates for another, which gives
+//! the host a second line of defence on top of "store key images
+//! scoped per election" (see the README's anti-double-vote contract).
 
 use crate::error::{Error, Result};
 use crate::types::{KeyImage, PublicKey, SecretKey, Signature, VoteProof};
@@ -43,7 +61,10 @@ use rand::rngs::OsRng;
 /// - `vote` — the exact bytes of the ballot. Whatever encoding the
 ///   host has chosen is fine; the module treats it as an opaque byte
 ///   string and only cares that the verifier later hashes the same
-///   bytes.
+///   bytes. Must be non-empty.
+/// - `election_id` — string identifying this election (a UUID, a slug,
+///   anything stable). Mixed into the hash chain so signatures from
+///   one election never validate for another. Must be non-empty.
 /// - `ring` — the **full** list of authorised public keys, including
 ///   the voter's own. The voter's key must appear in it exactly once;
 ///   otherwise the signature would not verify against the canonical
@@ -55,14 +76,30 @@ use rand::rngs::OsRng;
 ///
 /// # Errors
 ///
+/// - [`Error::EmptyVote`] if `vote` is empty.
+/// - [`Error::EmptyElectionId`] if `election_id` is empty.
 /// - [`Error::RingTooSmall`] if `ring` has fewer than 2 entries.
 /// - [`Error::DuplicateRingMember`] if a public key appears twice.
 /// - [`Error::SignerNotInRing`] if the voter's public key is missing.
 pub fn sign_vote(
     secret_key: &SecretKey,
     vote: &[u8],
+    election_id: &str,
     ring: &[PublicKey],
 ) -> Result<VoteProof> {
+    // 0. Cheap guardrails. These are not crypto, just sanity checks
+    //    that turn a silent footgun into a loud error.
+    if vote.is_empty() {
+        return Err(Error::EmptyVote);
+    }
+    if election_id.is_empty() {
+        return Err(Error::EmptyElectionId);
+    }
+    // Strings are bytes from here on. We commit to UTF-8 at the API
+    // boundary; whatever the caller passed verbatim is what gets
+    // hashed.
+    let election_id = election_id.as_bytes();
+
     // 1. Validate and canonicalise the ring.
     //
     //    Sorting by the 32-byte compressed encoding gives a total order
@@ -88,14 +125,18 @@ pub fn sign_vote(
         .map(|(_, pk)| pk.point)
         .collect();
 
-    // 4. Hand off to nazgul. `Blake2b512` is wired in here as the
+    // 4. Bind the message to the election context before handing it
+    //    to nazgul. See the module-level docs for the wire format.
+    let bound = bind_to_election(election_id, vote);
+
+    // 5. Hand off to nazgul. `Blake2b512` is wired in here as the
     //    `Hash` generic, so every challenge the protocol computes goes
     //    through Blake2b-512.
     let blsag = BLSAG::sign::<Blake2b512, OsRng>(
         secret_key.scalar,
         decoy_ring,
         secret_index,
-        vote,
+        &bound,
     );
 
     // 5. Repackage into our public types. We drop nazgul's `ring` field
@@ -112,6 +153,24 @@ pub fn sign_vote(
             point: blsag.key_image,
         },
     })
+}
+
+/// Build the actual byte string that gets hashed.
+///
+/// Layout: `u64 big-endian length prefix || election_id || vote`. The
+/// length prefix is the only thing standing between us and an
+/// ambiguity attack where two different `(election_id, vote)` pairs
+/// concatenate to the same bytes. 8 bytes is overkill for any realistic
+/// election ID but it costs nothing and removes the question from the
+/// caller's mind.
+///
+/// `verify_vote` calls the same function so the two sides cannot drift.
+pub(crate) fn bind_to_election(election_id: &[u8], vote: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + election_id.len() + vote.len());
+    out.extend_from_slice(&(election_id.len() as u64).to_be_bytes());
+    out.extend_from_slice(election_id);
+    out.extend_from_slice(vote);
+    out
 }
 
 /// Sort the ring, check it is well-formed, and reject pathological inputs.
@@ -138,10 +197,12 @@ mod tests {
     use super::*;
     use crate::identity::generate_identity;
 
+    const EID: &str = "election-2026";
+
     #[test]
     fn rejects_ring_too_small() {
         let voter = generate_identity();
-        let err = sign_vote(&voter.secret_key, b"yes", &[voter.public_key]).unwrap_err();
+        let err = sign_vote(&voter.secret_key, b"yes", EID, &[voter.public_key]).unwrap_err();
         assert_eq!(err, Error::RingTooSmall);
     }
 
@@ -150,8 +211,13 @@ mod tests {
         let voter = generate_identity();
         let dup = voter.public_key;
         let other = generate_identity().public_key;
-        let err =
-            sign_vote(&voter.secret_key, b"yes", &[voter.public_key, dup, other]).unwrap_err();
+        let err = sign_vote(
+            &voter.secret_key,
+            b"yes",
+            EID,
+            &[voter.public_key, dup, other],
+        )
+        .unwrap_err();
         assert_eq!(err, Error::DuplicateRingMember);
     }
 
@@ -160,7 +226,34 @@ mod tests {
         let voter = generate_identity();
         let a = generate_identity().public_key;
         let b = generate_identity().public_key;
-        let err = sign_vote(&voter.secret_key, b"yes", &[a, b]).unwrap_err();
+        let err = sign_vote(&voter.secret_key, b"yes", EID, &[a, b]).unwrap_err();
         assert_eq!(err, Error::SignerNotInRing);
+    }
+
+    #[test]
+    fn rejects_empty_vote() {
+        let voter = generate_identity();
+        let other = generate_identity().public_key;
+        let err =
+            sign_vote(&voter.secret_key, b"", EID, &[voter.public_key, other]).unwrap_err();
+        assert_eq!(err, Error::EmptyVote);
+    }
+
+    #[test]
+    fn rejects_empty_election_id() {
+        let voter = generate_identity();
+        let other = generate_identity().public_key;
+        let err =
+            sign_vote(&voter.secret_key, b"yes", "", &[voter.public_key, other]).unwrap_err();
+        assert_eq!(err, Error::EmptyElectionId);
+    }
+
+    #[test]
+    fn binding_is_unambiguous_between_eid_and_vote() {
+        // ("AB", "C") and ("A", "BC") would collide without a length
+        // prefix. Check the actual bytes differ.
+        let a = bind_to_election(b"AB", b"C");
+        let b = bind_to_election(b"A", b"BC");
+        assert_ne!(a, b);
     }
 }

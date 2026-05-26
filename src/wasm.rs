@@ -77,24 +77,59 @@ pub fn generate_identity_wasm() -> js_sys::Array {
     // `secret_bytes` drops here; its memory is zeroed.
 }
 
-/// Browser-facing version of [`crate::sign_vote`].
+/// Browser-facing version of [`crate::sign_vote`] for a **text ballot**.
+///
+/// `vote` is a `&str`: JavaScript passes a plain string and wasm-bindgen
+/// transcodes it to UTF-8 across the boundary, so the bytes hashed here
+/// are exactly `new TextEncoder().encode(vote)` — and exactly what the
+/// Extism `sign_vote_str` plugin hashes for the same string. That
+/// symmetry is what lets a ballot signed here be verified by any
+/// flavour. For an arbitrary binary ballot, use [`sign_vote_bytes_wasm`].
+///
+/// See [`sign_vote_bytes_wasm`] for the shared `secret_bytes`,
+/// `election_id`, ring and return-value semantics.
+#[wasm_bindgen]
+pub fn sign_vote_str_wasm(
+    secret_bytes: Vec<u8>,
+    vote: &str,
+    election_id: &str,
+    ring_hex: Vec<String>,
+) -> Result<js_sys::Array, JsValue> {
+    sign_vote_inner(secret_bytes, vote.as_bytes(), election_id, ring_hex)
+}
+
+/// Browser-facing version of [`crate::sign_vote`] for a **binary ballot**.
+///
+/// `vote` is a `&[u8]` — JavaScript passes a `Uint8Array` of any length
+/// (raw Protobuf, embedded NUL bytes, any non-UTF-8 sequence). The bytes
+/// are hashed verbatim, so a proof made here verifies under any flavour
+/// whose vote bytes match (e.g. the Extism `verify_vote_hex` plugin fed
+/// the hex of these same bytes).
 ///
 /// `secret_bytes` is the 32-byte raw secret key (typically a
-/// `Uint8Array` that the JS caller just read out of storage). The
-/// Rust side wraps it in `Zeroizing` immediately, so the WASM-internal
-/// copy is overwritten when the function returns. The JS caller is
-/// responsible for `.fill(0)`-ing its own `Uint8Array` once the call
-/// has returned.
-///
-/// `vote` is a `&[u8]` so JavaScript can pass an arbitrarily large
-/// `Uint8Array` (JSON, Protobuf, anything). `election_id` is a plain
-/// JS string — typically a UUID or slug — and is normalised to Unicode
-/// NFC inside the crate before hashing.
+/// `Uint8Array` the JS caller just read out of storage). The Rust side
+/// wraps it in `Zeroizing` immediately, so the WASM-internal copy is
+/// overwritten when the function returns. The JS caller is responsible
+/// for `.fill(0)`-ing its own `Uint8Array` once the call has returned.
+/// `election_id` is a plain JS string — typically a UUID or slug — and
+/// is normalised to Unicode NFC inside the crate before hashing (the
+/// vote is *not*; it is hashed verbatim).
 ///
 /// Returns a `[signatureHex, keyImageHex]` pair as a `js_sys::Array`.
 /// Neither value is secret; hex is convenient for the host API.
 #[wasm_bindgen]
-pub fn sign_vote_wasm(
+pub fn sign_vote_bytes_wasm(
+    secret_bytes: Vec<u8>,
+    vote: &[u8],
+    election_id: &str,
+    ring_hex: Vec<String>,
+) -> Result<js_sys::Array, JsValue> {
+    sign_vote_inner(secret_bytes, vote, election_id, ring_hex)
+}
+
+/// Shared signing core for both `sign_vote_*_wasm` entry points:
+/// everything except how the vote bytes were obtained from JS.
+fn sign_vote_inner(
     secret_bytes: Vec<u8>,
     vote: &[u8],
     election_id: &str,
@@ -130,10 +165,10 @@ pub fn sign_vote_wasm(
 /// canonical non-zero scalar. Any malformed input (wrong length,
 /// non-canonical encoding, zero scalar) returns `false`.
 ///
-/// As with `sign_vote_wasm`, the input is wrapped in `Zeroizing` on the
-/// Rust side so the WASM-internal copy is overwritten before its
-/// allocation is freed. The JS caller is still responsible for
-/// `.fill(0)`-ing its own `Uint8Array` once the call has returned.
+/// As with the `sign_vote_*_wasm` functions, the input is wrapped in
+/// `Zeroizing` on the Rust side so the WASM-internal copy is overwritten
+/// before its allocation is freed. The JS caller is still responsible
+/// for `.fill(0)`-ing its own `Uint8Array` once the call has returned.
 #[wasm_bindgen]
 pub fn is_valid_secret_key_wasm(secret_bytes: Vec<u8>) -> bool {
     let secret = Zeroizing::new(secret_bytes);
@@ -143,15 +178,42 @@ pub fn is_valid_secret_key_wasm(secret_bytes: Vec<u8>) -> bool {
     SecretKey::is_valid_bytes(arr)
 }
 
-/// Browser-facing version of [`crate::verify_vote`].
-///
-/// No secret material is involved; everything is hex (or `&[u8]` for
-/// the ballot). Returns a plain `bool`. Any input parsing error is
-/// mapped to `false`, because from the host's point of view "not a
-/// valid proof" and "not a parseable proof" are the same answer:
-/// reject.
+/// Browser-facing version of [`crate::verify_vote`] for a **text
+/// ballot**: `vote` is a `&str`, hashed as its UTF-8 bytes. The
+/// counterpart of [`sign_vote_str_wasm`] / Extism `verify_vote_str`.
+/// For binary ballots use [`verify_vote_bytes_wasm`].
 #[wasm_bindgen]
-pub fn verify_vote_wasm(
+pub fn verify_vote_str_wasm(
+    vote: &str,
+    election_id: &str,
+    signature_hex: &str,
+    key_image_hex: &str,
+    ring_hex: Vec<String>,
+) -> bool {
+    verify_vote_inner(vote.as_bytes(), election_id, signature_hex, key_image_hex, ring_hex)
+}
+
+/// Browser-facing version of [`crate::verify_vote`] for a **binary
+/// ballot**: `vote` is a `&[u8]` (a `Uint8Array`). The counterpart of
+/// [`sign_vote_bytes_wasm`] / Extism `verify_vote_hex`.
+///
+/// No secret material is involved; everything else is hex. Returns a
+/// plain `bool`. Any input parsing error is mapped to `false`, because
+/// from the host's point of view "not a valid proof" and "not a
+/// parseable proof" are the same answer: reject.
+#[wasm_bindgen]
+pub fn verify_vote_bytes_wasm(
+    vote: &[u8],
+    election_id: &str,
+    signature_hex: &str,
+    key_image_hex: &str,
+    ring_hex: Vec<String>,
+) -> bool {
+    verify_vote_inner(vote, election_id, signature_hex, key_image_hex, ring_hex)
+}
+
+/// Shared verify core for both `verify_vote_*_wasm` entry points.
+fn verify_vote_inner(
     vote: &[u8],
     election_id: &str,
     signature_hex: &str,

@@ -252,7 +252,7 @@ interchangeable encodings; pick the one that matches your transport:
 
 | Encoding | Shape | Where it's used |
 |---|---|---|
-| **Raw bytes** | `[u8; 32]` little-endian | `SecretKey::{to,from}_bytes`, `sign_vote_wasm` and `is_valid_secret_key_wasm` inputs |
+| **Raw bytes** | `[u8; 32]` little-endian | `SecretKey::{to,from}_bytes`, `sign_vote_*_wasm` and `is_valid_secret_key_wasm` secret inputs |
 | **Hex** | 64 lowercase characters | `SecretKey::{to,from}_hex`, Extism plugin, CLI |
 
 Both encodings carry the same value bit-for-bit. Hex is the default
@@ -362,6 +362,12 @@ valid
 The library treats the vote as **opaque bytes** — `sign_vote` and
 `verify_vote` both take `&[u8]`, with no size limit and no parsing.
 JSON, Protobuf, raw text, or arbitrary binary all work the same way.
+The WASM and Extism bindings expose **two entry points** per operation
+to cover this: a *text* one (`vote` as a UTF-8 string) and a *binary*
+one (`vote` as a `Uint8Array` in WASM, hex-encoded in Extism). Both
+funnel into the same `&[u8]` core, so a ballot signed through one is
+verifiable through any of them as long as the bytes match. See those
+sections below.
 
 **The contract for the host:** what you sign is what you store is what
 you verify, byte-for-byte. If the host re-encodes the payload between
@@ -380,24 +386,37 @@ normalising it would silently change what was signed.
 
 ### Large or structured payloads in the browser
 
-`sign_vote_wasm` accepts a `Uint8Array` of any length. The natural
-pattern for a JSON ballot is to encode it once on the voter's device
-and pass the resulting bytes everywhere afterwards:
+There are two signing entry points. Pick by ballot type:
+
+- **`sign_vote_str_wasm(secret, voteStr, electionId, ring)`** — `vote`
+  is a string. Use it for text ballots (a label, a stringified JSON
+  ballot). Most common.
+- **`sign_vote_bytes_wasm(secret, voteBytes, electionId, ring)`** —
+  `vote` is a `Uint8Array`. Use it for binary ballots (raw Protobuf,
+  any non-UTF-8 bytes).
+
+The natural pattern for a JSON ballot is to serialise it once on the
+voter's device and pass that exact string everywhere afterwards:
 
 ```js
-const ballotBytes = new TextEncoder().encode(JSON.stringify(form));
-const electionId  = "550e8400-e29b-41d4-a716-446655440000"; // plain JS string
-const [sigHex, tagHex] = sign_vote_wasm(
-    secretBytes, ballotBytes, electionId, ringHex,
+const ballot     = JSON.stringify(form);                   // a string
+const electionId = "550e8400-e29b-41d4-a716-446655440000"; // plain JS string
+const [sigHex, tagHex] = sign_vote_str_wasm(
+    secretBytes, ballot, electionId, ringHex,
 );
 // `secretBytes` is the `Uint8Array` returned by `generate_identity_wasm`
 // (or read back from your store). Wipe it with `secretBytes.fill(0)`
 // as soon as you no longer need it in memory.
 
-// Send `ballotBytes` (the same Uint8Array), `sigHex` and `tagHex`
-// to the host. The host stores `ballotBytes` verbatim — it must
-// never JSON.parse + JSON.stringify the payload, or verification
-// will fail.
+// Send `ballot` (the same string), `sigHex` and `tagHex` to the host.
+// The host stores `ballot` verbatim — it must never JSON.parse +
+// JSON.stringify the payload, or the re-serialised string may differ
+// byte-for-byte and verification will fail.
+
+// Binary ballot? Sign the exact bytes and store them verbatim instead:
+//   const [sigHex, tagHex] = sign_vote_bytes_wasm(
+//       secretBytes, ballotBytes /* Uint8Array */, electionId, ringHex,
+//   );
 ```
 
 ### Large or structured payloads on the CLI
@@ -445,8 +464,10 @@ file:
 ```js
 import init, {
     generate_identity_wasm,
-    sign_vote_wasm,
-    verify_vote_wasm,
+    sign_vote_str_wasm,    // text ballot
+    sign_vote_bytes_wasm,  // binary ballot (Uint8Array)
+    verify_vote_str_wasm,
+    verify_vote_bytes_wasm,
     is_valid_secret_key_wasm,
 } from "./pkg/crypto_vote.js";
 
@@ -493,7 +514,7 @@ secretBytes.fill(0);
 ### Validating a stored secret key
 
 `is_valid_secret_key_wasm` runs the same canonical-encoding and
-non-zero-scalar checks `sign_vote_wasm` applies internally, but
+non-zero-scalar checks the `sign_vote_*_wasm` functions apply internally, but
 without producing anything — useful for surfacing a clear UI error
 before the voter has filled in the rest of the form. The input is
 wrapped in `Zeroizing` on the Rust side; the caller still owns
@@ -505,7 +526,7 @@ if (!is_valid_secret_key_wasm(secretBytes)) {
     secretBytes.fill(0);
     throw new Error("stored secret is corrupted or invalid");
 }
-// secretBytes is safe to feed into sign_vote_wasm.
+// secretBytes is safe to feed into the sign_vote_*_wasm functions.
 ```
 
 Returns `false` (never throws) on any malformed input: wrong length,
@@ -514,10 +535,11 @@ non-canonical encoding, or the zero scalar.
 ### Operation B — sign a ballot
 
 ```js
-// 1. Encode the ballot ONCE. These exact bytes are what gets signed,
-//    what you send to the host, and what the host must store verbatim.
-//    Do not re-stringify on the host — verification compares bytes.
-const ballotBytes = new TextEncoder().encode(JSON.stringify({ choice: "option-A" }));
+// 1. Serialise the ballot ONCE into a string. This exact string is
+//    what gets signed, what you send to the host, and what the host
+//    must store verbatim. Do not re-stringify on the host —
+//    verification compares the UTF-8 bytes of the string.
+const ballot = JSON.stringify({ choice: "option-A" });
 
 // 2. Election context the host has told the page about.
 const electionId = "550e8400-e29b-41d4-a716-446655440000";
@@ -543,19 +565,20 @@ const electionId = "550e8400-e29b-41d4-a716-446655440000";
 const ring = await fetch("/api/election/ring").then(r => r.json());
 
 // 4. Read the secret bytes back from wherever you persisted them.
-//    `sign_vote_wasm` takes a `Uint8Array` of length 32. Wrap the call
-//    in try/finally so the in-memory copy of the secret is wiped even
-//    on error.
+//    `sign_vote_str_wasm` takes the secret as a `Uint8Array` of length
+//    32. Wrap the call in try/finally so the in-memory copy of the
+//    secret is wiped even on error.
 const secretBytes = await loadVoterSecret();
 let signatureHex, keyImageHex;
 try {
-    // `sign_vote_wasm` throws on bad inputs (empty vote, empty election
-    // ID, secret of the wrong length, signer not in the ring, …). The
-    // Rust side wraps the incoming bytes in `Zeroizing` so the WASM
-    // linear-memory copy is wiped on return.
-    [signatureHex, keyImageHex] = sign_vote_wasm(
+    // `sign_vote_str_wasm` throws on bad inputs (empty vote, empty
+    // election ID, secret of the wrong length, signer not in the ring,
+    // …). The Rust side wraps the incoming bytes in `Zeroizing` so the
+    // WASM linear-memory copy is wiped on return. (For a binary ballot,
+    // call `sign_vote_bytes_wasm` with a `Uint8Array` instead.)
+    [signatureHex, keyImageHex] = sign_vote_str_wasm(
         secretBytes,
-        ballotBytes,
+        ballot,
         electionId,
         ring,
     );
@@ -566,13 +589,14 @@ try {
     secretBytes.fill(0);
 }
 
-// 6. Send the proof + the raw bytes to the host. Use a multipart or
-//    binary-safe body so the bytes survive the trip unchanged.
+// 6. Send the proof + the ballot string to the host. The ballot must
+//    arrive byte-for-byte unchanged, so transmit it as-is (here a
+//    plain form field; a JSON body works too) and never re-serialise.
 const form = new FormData();
 form.append("election_id", electionId);
 form.append("signature", signatureHex);
 form.append("key_image", keyImageHex);
-form.append("ballot", new Blob([ballotBytes], { type: "application/octet-stream" }));
+form.append("ballot", ballot);
 
 await fetch("/api/vote", { method: "POST", body: form });
 ```
@@ -584,21 +608,22 @@ prefer to keep verification inside a JS runtime instead of linking the
 Rust crate natively:
 
 ```js
-import init, { verify_vote_wasm } from "./pkg/crypto_vote.js";
+import init, { verify_vote_str_wasm } from "./pkg/crypto_vote.js";
 
 await init();
 
-// `ballotBytes` is whatever you stored verbatim when receiving the
-// vote — read it back as a Uint8Array without any re-encoding.
-const isValid = verify_vote_wasm(
-    ballotBytes,
+// `ballot` is the exact string you stored verbatim when receiving the
+// vote — read it back without any re-encoding or re-serialisation.
+// (A binary ballot stored as bytes verifies with `verify_vote_bytes_wasm`.)
+const isValid = verify_vote_str_wasm(
+    ballot,
     electionId,
     signatureHex,
     keyImageHex,
     ring,
 );
 
-// `verify_vote_wasm` never throws and never returns anything other
+// `verify_vote_str_wasm` never throws and never returns anything other
 // than a boolean: any parse error / malformed input is just `false`.
 if (!isValid) {
     return reject("invalid proof");
@@ -607,11 +632,11 @@ if (!isValid) {
 
 ### Host-side checklist
 
-Before calling `verify_vote_wasm`, the host should:
+Before calling `verify_vote_str_wasm` / `verify_vote_bytes_wasm`, the host should:
 
 1. Read `key_image` from the submission and look it up in its
    per-election store. If present → reject (double vote).
-2. Otherwise call `verify_vote_wasm`. On `true`, persist `key_image`
+2. Otherwise call the matching `verify_vote_*_wasm`. On `true`, persist `key_image`
    to the store *atomically with* recording the ballot, so a crash
    between the two cannot let a voter slip through twice.
 
@@ -632,10 +657,10 @@ The architectural split that matches their trade-offs:
 | Role | Flavour | Why |
 |---|---|---|
 | **Voter device** (browser, signs ballots) | wasm-bindgen | Secret is exposed as a mutable `Uint8Array` that the JS caller can `.fill(0)`. Every Rust-side temporary is `Zeroizing`-wrapped. This is the only flavour built around memory hygiene for the secret. |
-| **Verifier** (server, mobile app, audit tool, CLI tooling, …) | **Extism** | Verification never touches a secret — `verify_vote` only handles public bytes (signature, key image, ring, ballot). One binary supports verifiers written in any host language. |
+| **Verifier** (server, mobile app, audit tool, CLI tooling, …) | **Extism** | Verification never touches a secret — `verify_vote_str` / `verify_vote_hex` only handle public bytes (signature, key image, ring, ballot). One binary supports verifiers written in any host language. |
 
-The Extism flavour *can* technically run `sign_vote` and
-`generate_identity`, but doing so on a voter device degrades secret
+The Extism flavour *can* technically run the `sign_vote_*` functions
+and `generate_identity`, but doing so on a voter device degrades secret
 hygiene compared to wasm-bindgen — see the next subsection. For
 verifiers and non-secret-handling tooling, the Extism flavour is the
 right default.
@@ -648,7 +673,7 @@ wasm-bindgen flavour provides are weakened or lost:
 
 - The **Rust-side intermediate `String`** holding the parsed secret
   *is* wrapped in `Zeroizing` (its heap allocation is overwritten when
-  `sign_vote` returns). However the JSON parser's internal buffers and
+  the sign call returns). However the JSON parser's internal buffers and
   the Extism PDK's input buffer in WASM linear memory are not under
   our control.
 - The **JS-side `String`** holding the secret is **immutable** — the
@@ -668,29 +693,49 @@ post-hoc class, sign on a voter device with the wasm-bindgen flavour.
 
 ### Plugin function signatures
 
+Sign and verify each come in two flavours, differing only in how the
+`vote` field is carried:
+
 | Plugin function | JSON input | JSON output |
 |---|---|---|
 | `generate_identity` | *(empty)* | `{"secret": <hex64>, "public": <hex64>}` |
-| `sign_vote` | `{"secret": <hex64>, "vote": <hex>, "election_id": <str>, "ring": [<hex64>, …]}` | `{"signature": <hex>, "key_image": <hex64>}` |
-| `verify_vote` | `{"vote": <hex>, "election_id": <str>, "signature": <hex>, "key_image": <hex64>, "ring": [<hex64>, …]}` | `{"valid": <bool>}` |
+| `sign_vote_str` | `{"secret": <hex64>, "vote": <str>, "election_id": <str>, "ring": [<hex64>, …]}` | `{"signature": <hex>, "key_image": <hex64>}` |
+| `sign_vote_hex` | `{"secret": <hex64>, "vote": <hex>, "election_id": <str>, "ring": [<hex64>, …]}` | `{"signature": <hex>, "key_image": <hex64>}` |
+| `verify_vote_str` | `{"vote": <str>, "election_id": <str>, "signature": <hex>, "key_image": <hex64>, "ring": [<hex64>, …]}` | `{"valid": <bool>}` |
+| `verify_vote_hex` | `{"vote": <hex>, "election_id": <str>, "signature": <hex>, "key_image": <hex64>, "ring": [<hex64>, …]}` | `{"valid": <bool>}` |
 | `is_valid_secret_key` | `{"secret": <hex64>}` | `{"valid": <bool>}` |
 
-`vote` is hex-encoded *bytes* — the host can put JSON, Protobuf, or
-arbitrary binary in there; the library treats it opaquely. Hex was
-picked over base64 for consistency with the rest of the public API.
+- **`_str`** — `vote` is a plain JSON string; its UTF-8 bytes *are* the
+  ballot, fed verbatim with no decoding. Ergonomic for text ballots (a
+  label, a stringified JSON ballot). A JSON string only carries valid
+  UTF-8, so this flavour can't represent a non-UTF-8 ballot.
+- **`_hex`** — `vote` is hex-encoded bytes, decoded before hashing. Use
+  it for *arbitrary binary* ballots (raw Protobuf, NUL bytes, any
+  non-UTF-8 sequence). Hex keeps the encoding uniform with the rest of
+  the wire (keys, signatures, tags are all hex).
+
+The two are just front doors to the same byte-level operation — the
+library always sees `&[u8]`. So a proof made with `sign_vote_str`
+verifies under `verify_vote_hex` and vice-versa, as long as the bytes
+match (signing `"oui"` with `_str` == signing `"6f7569"` with `_hex`).
+This is also what lets a ballot signed by either wasm-bindgen function
+verify here: only the vote bytes matter. A binary ballot signed in the
+browser with `sign_vote_bytes_wasm` is verified on the server by
+hex-encoding those stored bytes and calling `verify_vote_hex`.
 
 `is_valid_secret_key` is a pure utility that mirrors
 `SecretKey::is_valid_hex`: it returns `{"valid": false}` (never an
 error) for malformed input — bad hex, wrong length, non-canonical
 encoding, or the zero scalar. The Rust-side copy of the secret is
-wrapped in `Zeroizing`, but the same JSON-buffer caveat as
-[`sign_vote`](#secret-hygiene-trade-off-vs-wasm-bindgen) applies; for
-secret-handling on a voter device, prefer the wasm-bindgen flavour.
+wrapped in `Zeroizing`, but the same JSON-buffer caveat as the
+[`sign_vote_*`](#secret-hygiene-trade-off-vs-wasm-bindgen) functions
+applies; for secret-handling on a voter device, prefer the wasm-bindgen
+flavour.
 
 ### Browser example
 
-> The browser snippet below exercises all three plugin functions for
-> completeness, but in a real deployment a voter device should sign
+> The browser snippet below exercises the identity, sign and verify
+> functions for completeness, but in a real deployment a voter device should sign
 > with the [wasm-bindgen flavour](#using-from-javascript--webassembly)
 > for better secret hygiene. The Extism flavour in the browser is
 > idiomatic for *verifier* roles: audit pages, results dashboards,
@@ -719,24 +764,28 @@ const { secret, public: publicHex } = await plugin
 await persistVoterSecret(secret);
 
 // --- Operation B — sign a ballot ---
-const ballotBytes = new TextEncoder().encode(JSON.stringify({ choice: "option-A" }));
-const ballotHex   = Array.from(ballotBytes, b => b.toString(16).padStart(2, "0")).join("");
+// Text ballot → `sign_vote_str`, vote passed through unchanged, no hex
+// step. (Binary ballot → `sign_vote_hex` with `vote` set to the hex of
+// your bytes.)
+const ballot = JSON.stringify({ choice: "option-A" });
 
 const ring = await fetch("/api/election/ring").then(r => r.json());
 
 const { signature, key_image } = await plugin
-    .call("sign_vote", JSON.stringify({
+    .call("sign_vote_str", JSON.stringify({
         secret,
-        vote:        ballotHex,
+        vote:        ballot,
         election_id: "election-2026",
         ring,
     }))
     .then(out => out.json());
 
 // --- Operation C — verify (also works server-side; see below) ---
+// Use the flavour matching how the ballot was signed: `verify_vote_str`
+// for a string vote, `verify_vote_hex` for a hex one.
 const { valid } = await plugin
-    .call("verify_vote", JSON.stringify({
-        vote:        ballotHex,
+    .call("verify_vote_str", JSON.stringify({
+        vote:        ballot,
         election_id: "election-2026",
         signature,
         key_image,
@@ -761,7 +810,7 @@ const plugin = await createPlugin(
 );
 
 const { valid } = await plugin
-    .call("verify_vote", JSON.stringify({ /* ... same shape ... */ }))
+    .call("verify_vote_str", JSON.stringify({ /* ... same shape ... */ }))
     .then(out => out.json());
 ```
 

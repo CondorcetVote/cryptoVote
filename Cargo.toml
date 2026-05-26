@@ -166,10 +166,14 @@ panic = "abort"
 # step fails with `[wasm-validator error] ... Bulk memory operations
 # require bulk memory [--enable-bulk-memory]`.
 #
-# The metadata key follows the profile name: invoking
-# `wasm-pack build --profile wasm-release` makes wasm-pack look up
-# `[package.metadata.wasm-pack.profile.wasm-release]` for these flags.
-[package.metadata.wasm-pack.profile.wasm-release]
+# The metadata key is `custom`, NOT `wasm-release`. wasm-pack's
+# metadata schema only recognises four hard-coded keys — `dev`,
+# `release`, `profiling`, and `custom`. Any user-defined Cargo profile
+# passed via `wasm-pack build --profile <name>` is identified
+# internally as `BuildProfile::Custom(name)` and looks up its wasm-opt
+# config under `[package.metadata.wasm-pack.profile.custom]`. The
+# Cargo-side profile name (here `wasm-release`) is unrelated.
+[package.metadata.wasm-pack.profile.custom]
 wasm-opt = [
     "-Oz",
     "--enable-bulk-memory",

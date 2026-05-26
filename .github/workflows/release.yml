@@ -151,9 +151,17 @@ jobs:
           key: wasm32-unknown-unknown
 
       - name: Install wasm-pack
-        # The official installer is faster than `cargo install`. It
-        # downloads a prebuilt binary that matches the runner arch.
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+        # Why `cargo install` rather than the official installer script?
+        # The `rustwasm.github.io/wasm-pack/installer/init.sh` URL is a
+        # stale snapshot — the repo moved from `rustwasm/wasm-pack` to
+        # `wasm-bindgen/wasm-pack` (July 2025) and the old Pages site
+        # serves a frozen `init.sh` pinned to v0.13.1, which predates
+        # support for the `--profile <name>` CLI flag we use for the
+        # `wasm-release` Cargo profile. crates.io is always in sync with
+        # the live releases, so `cargo install` is the reliable path.
+        # `--locked` uses wasm-pack's own Cargo.lock for a reproducible
+        # build.
+        run: cargo install wasm-pack --locked
 
       - name: Build browser bundle
         # `--target web` emits ESM glue suitable for native ES modules

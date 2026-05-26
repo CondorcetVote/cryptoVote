@@ -160,9 +160,13 @@ jobs:
         # in a browser. The `wasm` feature gates the wasm-bindgen
         # surface; `--no-default-features` drops the CLI bin from the
         # build graph so clap doesn't get pulled into the bundle.
+        # `--profile wasm-release` selects the WebAssembly-tuned profile
+        # that pins `panic = "abort"` (see Cargo.toml for the rationale
+        # — the plain `release` profile leaves panic at the default to
+        # avoid the cdylib/cargo-bench build-graph collision).
         run: |
           wasm-pack build \
-            --release \
+            --profile wasm-release \
             --target web \
             --out-dir pkg-browser \
             -- \
@@ -204,13 +208,15 @@ jobs:
         # `random_get` feeds `SysRng` directly, so no extra getrandom
         # backend is needed. The resulting `.wasm` runs in every Extism
         # host SDK (browser via `@extism/extism`, Node, Python, Go, …).
-        run: cargo build --release --locked --target wasm32-wasip1 --lib --no-default-features --features extism
+        # `--profile wasm-release` picks the WASM-tuned profile that
+        # adds `panic = "abort"` on top of release (see Cargo.toml).
+        run: cargo build --profile wasm-release --locked --target wasm32-wasip1 --lib --no-default-features --features extism
 
       - name: Package Extism plugin
         run: |
           STAGING="crypto_vote-extism"
           mkdir "$STAGING"
-          cp target/wasm32-wasip1/release/crypto_vote.wasm "$STAGING/crypto_vote-extism.wasm"
+          cp target/wasm32-wasip1/wasm-release/crypto_vote.wasm "$STAGING/crypto_vote-extism.wasm"
           cp README.md "$STAGING/" 2>/dev/null || true
           tar -czf "${STAGING}.tar.gz" "$STAGING"
           sha256sum "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"

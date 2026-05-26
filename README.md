@@ -186,10 +186,14 @@ export CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER=riscv64-linux-gnu-gcc
 ```
 
 Browser WASM uses `wasm-pack` (which wraps `cargo build` and emits JS
-glue alongside the `.wasm`):
+glue alongside the `.wasm`). The `wasm-release` profile is the
+WebAssembly-tuned variant defined in `Cargo.toml`: same size knobs as
+`release`, plus `panic = "abort"` (see Cargo.toml's `[profile.release]`
+comment for why panic strategy is kept out of the default release
+profile):
 
 ```bash
-wasm-pack build --release --target web --out-dir pkg-browser \
+wasm-pack build --profile wasm-release --target web --out-dir pkg-browser \
     -- --no-default-features --features wasm --locked
 # → pkg-browser/{crypto_vote.js, crypto_vote_bg.wasm, …}
 ```
@@ -206,8 +210,8 @@ loadable by every Extism host SDK (browser, Node, Python, Go, Rust, …).
 backend wiring is needed:
 
 ```bash
-cargo build --release --locked --target wasm32-wasip1 --lib --no-default-features --features extism
-# → target/wasm32-wasip1/release/crypto_vote.wasm   (~360 KB)
+cargo build --profile wasm-release --locked --target wasm32-wasip1 --lib --no-default-features --features extism
+# → target/wasm32-wasip1/wasm-release/crypto_vote.wasm   (~360 KB)
 ```
 
 See [Extism plugin](#extism-plugin) for the host-side usage from JS,
@@ -331,7 +335,7 @@ See the [Build matrix](#build-matrix) above for the full command and
 flag breakdown. The short version, run from the crate root:
 
 ```bash
-wasm-pack build --target web -- --no-default-features --features wasm
+wasm-pack build --profile wasm-release --target web -- --no-default-features --features wasm
 ```
 
 The resulting `pkg/` directory contains the `.wasm` artefact and the

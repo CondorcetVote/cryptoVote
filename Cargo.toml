@@ -105,15 +105,56 @@ extism-pdk = { version = "1", optional = true }
 # structs. Pulled in only when the `extism` feature is on.
 serde = { version = "1", features = ["derive"], optional = true }
 
-# Release profile tuned for small, fast WebAssembly artefacts. `opt-level
-# = "z"` favours code size over speed, which is normally what you want
-# inside a browser bundle. The CLI build picks the same profile, but its
-# binary is small enough that the difference is negligible.
+[dev-dependencies]
+# Statistically-grounded benchmarking. Used by `benches/crypto_vote.rs`
+# to measure the three core operations (identity generation, signing,
+# verification) over a 1000-member ring.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+# Disable the default `libtest` bench harness so Criterion's `main!()`
+# macro can take over. Without `harness = false`, cargo wires the file
+# up to the (unstable) built-in benchmark runner instead of Criterion.
+#
+# The bench target is *not* named after the lib (`crypto_vote`) on
+# purpose: when both share a name, cargo's verbose output ends up
+# running two rustc invocations with `--crate-name crypto_vote` and the
+# scheduler conflates them, double-emitting the lib's unhashed primary
+# artefacts (`libcrypto_vote.{dylib,rlib}`) and triggering the
+# `output filename collision` warning from cargo#6313.
+[[bench]]
+name = "ring_benches"
+harness = false
+
+# Release profile shared by the CLI bin and any other native target. It
+# tunes for small code size (`opt-level = "z"`, LTO, single codegen
+# unit, symbols stripped) but deliberately leaves `panic` at the
+# default `unwind`.
+#
+# The reason `panic = "abort"` is *not* set here is cargo#6313: when
+# the lib has `crate-type = ["cdylib", "rlib"]` and the release profile
+# pins `panic = "abort"`, `cargo bench` ends up building the lib twice
+# — once with `panic = "abort"` for the release-profile cdylib, once
+# with `panic = "unwind"` for the bench profile (libtest requires
+# unwinding). Both writes target the same unhashed primary artefacts
+# (`libcrypto_vote.{dylib,rlib}`), so whichever build finishes last
+# wins and the bench binary ends up linking the wrong panic strategy.
+# Concrete WASM bundles still get `panic = "abort"` via the
+# `wasm-release` profile below; native builds tolerate `unwind` with a
+# negligible size cost.
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+
+# Dedicated profile for the two WebAssembly build paths (browser via
+# `wasm-pack`, server via `cargo build --target wasm32-wasip1 …
+# --features extism`). It inherits the size-oriented release knobs and
+# adds `panic = "abort"` so panic landing pads and unwinding tables are
+# dropped from the `.wasm` artefacts. See `[profile.release]` above for
+# why this lives in its own profile rather than under `release`.
+[profile.wasm-release]
+inherits = "release"
 panic = "abort"
 
 # `wasm-pack` runs `wasm-opt` after rustc to shrink the bundle. The
@@ -124,7 +165,11 @@ panic = "abort"
 # into the feature set rustc actually targets, otherwise the wasm-pack
 # step fails with `[wasm-validator error] ... Bulk memory operations
 # require bulk memory [--enable-bulk-memory]`.
-[package.metadata.wasm-pack.profile.release]
+#
+# The metadata key follows the profile name: invoking
+# `wasm-pack build --profile wasm-release` makes wasm-pack look up
+# `[package.metadata.wasm-pack.profile.wasm-release]` for these flags.
+[package.metadata.wasm-pack.profile.wasm-release]
 wasm-opt = [
     "-Oz",
     "--enable-bulk-memory",

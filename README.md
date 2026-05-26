@@ -242,6 +242,100 @@ assert!(verify_vote(
 ));
 ```
 
+## Private key format and properties
+
+A secret key is a **uniformly random scalar in the Ristretto255 scalar
+field** — mathematically an integer in `[1, ℓ)`, where ℓ is the prime
+order of the group (`ℓ = 2^252 + 27742317777372353535851937790883648493`,
+≈ 2²⁵². So roughly 2²⁵² distinct keys exist). The crate ships two
+interchangeable encodings; pick the one that matches your transport:
+
+| Encoding | Shape | Where it's used |
+|---|---|---|
+| **Raw bytes** | `[u8; 32]` little-endian | `SecretKey::{to,from}_bytes`, `sign_vote_wasm` and `is_valid_secret_key_wasm` inputs |
+| **Hex** | 64 lowercase characters | `SecretKey::{to,from}_hex`, Extism plugin, CLI |
+
+Both encodings carry the same value bit-for-bit. Hex is the default
+for anything that travels on the wire (consistent with keys,
+signatures, and tags elsewhere in the API). Raw bytes is the only
+format the wasm-bindgen flavour accepts for secret material, because a
+`Uint8Array` is mutable and the JS caller can wipe it with `.fill(0)`
+— a JS `String` (and therefore a hex string) cannot be erased from the
+heap on demand.
+
+### Validity rules
+
+Every parser (`SecretKey::from_bytes`, `from_hex`, and the WASM /
+Extism entry points) enforces three checks. A key that fails any of
+them is rejected, never silently coerced:
+
+1. **Length.** Exactly 32 decoded bytes — `Error::InvalidLength`.
+   Hex input must therefore be 64 characters.
+2. **Canonical encoding modulo ℓ.** The 32 bytes must decode to a
+   scalar in `[0, ℓ)` — `Error::InvalidScalar`. The library refuses
+   any "non-reduced" encoding (e.g. a value ≥ ℓ but < 2²⁵⁶), because
+   that would let two different byte strings designate the same key
+   — a classic malleability footgun.
+3. **Non-zero.** The zero scalar is rejected — `Error::InvalidSecretKey`.
+   Its derived public key would be the Ristretto identity point, which
+   the protocol cannot use as a participant (and which `PublicKey`
+   independently refuses with `Error::InvalidIdentityPoint`).
+
+### Cryptographic properties
+
+- **The public key is fully determined by the secret key.** Internally
+  `public_key = secret_key · G` where `G` is the Ristretto255 base
+  point. Round-tripping a secret through `to_bytes` → `from_bytes`
+  derives the **same** public key, so you only need to persist the
+  32-byte secret — the public key (and therefore the ring entry) can
+  always be re-derived. There is no separate key-schedule, clamping,
+  or hashing step applied to the secret.
+- **Same key, same ring, same election ⇒ same key image.** This is
+  what makes double-vote detection possible. The key image is
+  `I_e = x · H_p(domain ‖ election_id ‖ x · G)`, so it is fully
+  deterministic in `(secret_key, election_id)` and changes between
+  elections (see [Election binding](#election-binding)).
+- **Entropy.** `generate_identity` samples from `SysRng` —
+  `getrandom(2)` / `getentropy(2)` / `BCryptGenRandom` natively,
+  `Crypto.getRandomValues` in the browser. Any uniform value in
+  `[1, ℓ)` is a valid secret. **Never** derive a secret from a user
+  password without a strong KDF (Argon2id / scrypt) producing 32
+  uniform bytes — the protocol's anonymity rests on the secret being
+  unguessable.
+- **Memory hygiene.** Inside Rust the scalar lives in a `SecretKey`
+  whose `Drop` impl calls `Zeroize`. Every transient buffer that
+  touches the secret on the WASM / Extism boundary is wrapped in
+  `Zeroizing`. The JS-side `Uint8Array` is the caller's
+  responsibility — see [Operation A](#operation-a--generate-an-identity)
+  for the wipe pattern. The hex form gives up that last step (a JS
+  `String` is immutable), which is why the wasm-bindgen flavour keeps
+  the secret as bytes.
+
+### Validating a secret key without constructing one
+
+Reading a stored secret back and want a quick "is this still a usable
+key?" check before doing anything else? Two zero-cost helpers apply
+the three rules above and return a plain `bool`:
+
+```rust
+use crypto_vote::SecretKey;
+
+let bytes: [u8; 32] = load_from_disk();
+if !SecretKey::is_valid_bytes(&bytes) {
+    return Err("stored secret is corrupted");
+}
+
+assert!(SecretKey::is_valid_hex("aabbccdd…"));        // canonical, non-zero
+assert!(!SecretKey::is_valid_hex("not hex"));          // bad encoding
+assert!(!SecretKey::is_valid_hex(&"00".repeat(32)));   // zero scalar
+```
+
+These are the same checks performed implicitly at the start of every
+`sign_vote` call, so calling them up-front is purely a convenience —
+useful for surfacing a clear UI message before the user has filled in
+the rest of the form. The WASM and Extism layers expose the same
+helper (see below).
+
 ## Using the command line
 
 ```bash
@@ -353,6 +447,7 @@ import init, {
     generate_identity_wasm,
     sign_vote_wasm,
     verify_vote_wasm,
+    is_valid_secret_key_wasm,
 } from "./pkg/crypto_vote.js";
 
 await init();
@@ -394,6 +489,27 @@ secretBytes.fill(0);
 > window of exposure is reduced to the smallest interval the caller
 > can manage. The library does its share by `Zeroizing` every
 > Rust-side copy of the secret automatically.
+
+### Validating a stored secret key
+
+`is_valid_secret_key_wasm` runs the same canonical-encoding and
+non-zero-scalar checks `sign_vote_wasm` applies internally, but
+without producing anything — useful for surfacing a clear UI error
+before the voter has filled in the rest of the form. The input is
+wrapped in `Zeroizing` on the Rust side; the caller still owns
+wiping its own `Uint8Array` afterwards.
+
+```js
+const secretBytes = await loadVoterSecret();
+if (!is_valid_secret_key_wasm(secretBytes)) {
+    secretBytes.fill(0);
+    throw new Error("stored secret is corrupted or invalid");
+}
+// secretBytes is safe to feed into sign_vote_wasm.
+```
+
+Returns `false` (never throws) on any malformed input: wrong length,
+non-canonical encoding, or the zero scalar.
 
 ### Operation B — sign a ballot
 
@@ -557,10 +673,19 @@ post-hoc class, sign on a voter device with the wasm-bindgen flavour.
 | `generate_identity` | *(empty)* | `{"secret": <hex64>, "public": <hex64>}` |
 | `sign_vote` | `{"secret": <hex64>, "vote": <hex>, "election_id": <str>, "ring": [<hex64>, …]}` | `{"signature": <hex>, "key_image": <hex64>}` |
 | `verify_vote` | `{"vote": <hex>, "election_id": <str>, "signature": <hex>, "key_image": <hex64>, "ring": [<hex64>, …]}` | `{"valid": <bool>}` |
+| `is_valid_secret_key` | `{"secret": <hex64>}` | `{"valid": <bool>}` |
 
 `vote` is hex-encoded *bytes* — the host can put JSON, Protobuf, or
 arbitrary binary in there; the library treats it opaquely. Hex was
 picked over base64 for consistency with the rest of the public API.
+
+`is_valid_secret_key` is a pure utility that mirrors
+`SecretKey::is_valid_hex`: it returns `{"valid": false}` (never an
+error) for malformed input — bad hex, wrong length, non-canonical
+encoding, or the zero scalar. The Rust-side copy of the secret is
+wrapped in `Zeroizing`, but the same JSON-buffer caveat as
+[`sign_vote`](#secret-hygiene-trade-off-vs-wasm-bindgen) applies; for
+secret-handling on a voter device, prefer the wasm-bindgen flavour.
 
 ### Browser example
 

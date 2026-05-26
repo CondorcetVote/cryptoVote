@@ -12,9 +12,10 @@
 //!
 //! | Plugin function   | JSON input shape                                                              | JSON output shape                |
 //! |-------------------|-------------------------------------------------------------------------------|----------------------------------|
-//! | `generate_identity` | *(empty)*                                                                   | `{"secret": hex64, "public": hex64}` |
-//! | `sign_vote`       | `{"secret": hex64, "vote": hex, "election_id": str, "ring": [hex64, …]}`      | `{"signature": hex, "key_image": hex64}` |
-//! | `verify_vote`     | `{"vote": hex, "election_id": str, "signature": hex, "key_image": hex64, "ring": [hex64, …]}` | `{"valid": bool}`               |
+//! | `generate_identity`    | *(empty)*                                                                   | `{"secret": hex64, "public": hex64}` |
+//! | `sign_vote`            | `{"secret": hex64, "vote": hex, "election_id": str, "ring": [hex64, …]}`    | `{"signature": hex, "key_image": hex64}` |
+//! | `verify_vote`          | `{"vote": hex, "election_id": str, "signature": hex, "key_image": hex64, "ring": [hex64, …]}` | `{"valid": bool}` |
+//! | `is_valid_secret_key`  | `{"secret": hex64}`                                                          | `{"valid": bool}`                |
 //!
 //! `vote` is hex-encoded *bytes* — the host can put JSON, Protobuf or
 //! anything in there, the library treats it opaquely. Hex was picked
@@ -118,6 +119,36 @@ pub fn verify_vote(Json(input): Json<VerifyIn>) -> FnResult<Json<VerifyOut>> {
     // identical regardless of who sent the bytes.
     let valid = decode_and_verify(&input).unwrap_or(false);
     Ok(Json(VerifyOut { valid }))
+}
+
+#[derive(Deserialize)]
+pub struct IsValidSecretIn {
+    pub secret: String,
+}
+
+#[derive(Serialize)]
+pub struct IsValidSecretOut {
+    pub valid: bool,
+}
+
+/// Plugin-side counterpart of [`crate::SecretKey::is_valid_hex`].
+///
+/// Returns `{"valid": true}` iff the hex string is a canonical 32-byte
+/// encoding of a non-zero scalar. Any malformed input (bad hex, wrong
+/// length, non-canonical, zero) returns `{"valid": false}` — never an
+/// error — so the host's flow is the same regardless of who sent the
+/// bytes.
+#[plugin_fn]
+pub fn is_valid_secret_key(Json(input): Json<IsValidSecretIn>) -> FnResult<Json<IsValidSecretOut>> {
+    // Same memory-hygiene caveat as `sign_vote`: we wrap the Rust-side
+    // copy of the secret in `Zeroizing` so its heap allocation is
+    // overwritten before this function returns. The JSON parser's
+    // intermediate buffers and the Extism input buffer in WASM linear
+    // memory are not under our control — see the module docs.
+    let secret = Zeroizing::new(input.secret);
+    Ok(Json(IsValidSecretOut {
+        valid: SecretKey::is_valid_hex(&secret),
+    }))
 }
 
 fn decode_and_verify(input: &VerifyIn) -> Option<bool> {

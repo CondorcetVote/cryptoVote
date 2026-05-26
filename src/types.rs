@@ -124,16 +124,9 @@ impl SecretKey {
     /// Returns [`Error::InvalidScalar`] if the bytes are not a canonical
     /// reduction modulo the group order.
     pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self> {
-        // `Scalar::from_canonical_bytes` is constant-time and returns
-        // None if the value is outside [0, ℓ). That second check is
-        // important: any other encoding could let two different byte
-        // strings represent the same key.
-        let scalar = Option::<Scalar>::from(Scalar::from_canonical_bytes(*bytes))
-            .ok_or(Error::InvalidScalar)?;
-        if scalar == Scalar::ZERO {
-            return Err(Error::InvalidSecretKey);
-        }
-        Ok(SecretKey { scalar })
+        Ok(SecretKey {
+            scalar: parse_secret_scalar(bytes)?,
+        })
     }
 
     /// Hex-encode using lowercase digits (64 characters).
@@ -154,6 +147,48 @@ impl SecretKey {
             })?;
         Self::from_bytes(&arr)
     }
+
+    /// Check whether 32 raw bytes encode a usable secret key, without
+    /// constructing one.
+    ///
+    /// Applies the same checks as [`SecretKey::from_bytes`]: the bytes
+    /// must be the canonical encoding of a scalar in `[0, ℓ)` and must
+    /// not be the zero scalar.
+    pub fn is_valid_bytes(bytes: &[u8; 32]) -> bool {
+        parse_secret_scalar(bytes).is_ok()
+    }
+
+    /// Check whether a hex string encodes a usable secret key, without
+    /// constructing one.
+    ///
+    /// Applies the same checks as [`SecretKey::from_hex`]: valid hex,
+    /// exactly 32 decoded bytes, canonical non-zero scalar.
+    pub fn is_valid_hex(s: &str) -> bool {
+        let Ok(bytes) = hex::decode(s) else {
+            return false;
+        };
+        let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice()) else {
+            return false;
+        };
+        Self::is_valid_bytes(&arr)
+    }
+}
+
+/// Validate-and-parse a 32-byte secret scalar.
+///
+/// Single source of truth for the secret-key validation rules:
+/// `Scalar::from_canonical_bytes` is constant-time and returns `None`
+/// outside `[0, ℓ)` (that second check matters — any other encoding
+/// could let two different byte strings represent the same key), and
+/// the zero scalar is rejected because its public key is the identity
+/// point.
+fn parse_secret_scalar(bytes: &[u8; 32]) -> Result<Scalar> {
+    let scalar = Option::<Scalar>::from(Scalar::from_canonical_bytes(*bytes))
+        .ok_or(Error::InvalidScalar)?;
+    if scalar == Scalar::ZERO {
+        return Err(Error::InvalidSecretKey);
+    }
+    Ok(scalar)
 }
 
 /// The protocol's "linking tag" — what the host stores to prevent double
@@ -350,6 +385,40 @@ mod tests {
             KeyImage::from_hex(IDENTITY_HEX).unwrap_err(),
             Error::InvalidIdentityPoint
         );
+    }
+
+    #[test]
+    fn is_valid_secret_key_matches_from_bytes() {
+        // Valid: any non-zero canonical scalar.
+        let mut valid = [0u8; 32];
+        valid[0] = 1;
+        assert!(SecretKey::is_valid_bytes(&valid));
+        assert!(SecretKey::is_valid_hex(&hex::encode(valid)));
+
+        // Zero scalar — rejected.
+        let zero = [0u8; 32];
+        assert!(!SecretKey::is_valid_bytes(&zero));
+        assert!(!SecretKey::is_valid_hex(IDENTITY_HEX));
+
+        // Non-canonical: all-0xff is well above ℓ.
+        let non_canonical = [0xffu8; 32];
+        assert!(!SecretKey::is_valid_bytes(&non_canonical));
+        assert!(!SecretKey::is_valid_hex(&hex::encode(non_canonical)));
+
+        // Bad hex / wrong length / non-hex chars — rejected.
+        assert!(!SecretKey::is_valid_hex("not hex at all!!"));
+        assert!(!SecretKey::is_valid_hex("aa")); // too short
+        assert!(!SecretKey::is_valid_hex(&"aa".repeat(33))); // too long
+    }
+
+    #[test]
+    fn is_valid_agrees_with_from_bytes_on_generated_keys() {
+        // A freshly generated identity must always pass validation, and
+        // a corrupted copy must always fail one of the checks.
+        let id = crate::identity::generate_identity();
+        let bytes = id.secret_key.to_bytes();
+        assert!(SecretKey::is_valid_bytes(&bytes));
+        assert!(SecretKey::is_valid_hex(&hex::encode(bytes)));
     }
 
     #[test]

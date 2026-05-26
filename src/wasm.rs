@@ -124,6 +124,25 @@ pub fn sign_vote_wasm(
     Ok(arr)
 }
 
+/// Browser-facing version of [`crate::SecretKey::is_valid_bytes`].
+///
+/// Returns `true` iff `secret_bytes` is exactly 32 bytes encoding a
+/// canonical non-zero scalar. Any malformed input (wrong length,
+/// non-canonical encoding, zero scalar) returns `false`.
+///
+/// As with `sign_vote_wasm`, the input is wrapped in `Zeroizing` on the
+/// Rust side so the WASM-internal copy is overwritten before its
+/// allocation is freed. The JS caller is still responsible for
+/// `.fill(0)`-ing its own `Uint8Array` once the call has returned.
+#[wasm_bindgen]
+pub fn is_valid_secret_key_wasm(secret_bytes: Vec<u8>) -> bool {
+    let secret = Zeroizing::new(secret_bytes);
+    let Ok(arr) = <&[u8; 32]>::try_from(&secret[..]) else {
+        return false;
+    };
+    SecretKey::is_valid_bytes(arr)
+}
+
 /// Browser-facing version of [`crate::verify_vote`].
 ///
 /// No secret material is involved; everything is hex (or `&[u8]` for

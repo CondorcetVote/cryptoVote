@@ -218,7 +218,13 @@ pub fn verify_vote_str_wasm(
     key_image_hex: &str,
     ring_hex: Vec<String>,
 ) -> bool {
-    verify_vote_inner(vote.as_bytes(), election_id, signature_hex, key_image_hex, ring_hex)
+    verify_vote_inner(
+        vote.as_bytes(),
+        election_id,
+        signature_hex,
+        key_image_hex,
+        ring_hex,
+    )
 }
 
 /// Browser-facing version of [`crate::verify_vote`] for a **binary

@@ -52,7 +52,13 @@ Follow idiomatic Rust — standard library types, ownership, `Result`-based erro
 ## Build and Test
 
 ```bash
-cargo check          # fast type-check
-cargo test           # full test suite
-cargo clippy         # lint — no warnings allowed
+cargo check                                    # fast type-check
+cargo test                                     # full test suite
+cargo fmt --all -- --check                     # formatting — must produce no diff
+cargo clippy --all-targets -- -D warnings      # lint, default features
+cargo clippy --no-default-features --features wasm \
+    --target wasm32-unknown-unknown --lib -- -D warnings   # lint, WASM feature
 ```
+
+These are the exact commands the CI lint job runs. All must pass before
+marking work as done.

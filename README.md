@@ -882,6 +882,26 @@ malleability resistance on both the signature and the key image, and
 every documented "invalid" case (tampered vote, tampered signature,
 swapped tag, wrong ring, subset/superset ring, malformed inputs).
 
+### Linting
+
+Three commands mirror the CI lint job exactly — run them before pushing:
+
+```bash
+# 1. Formatting — must produce no diff.
+cargo fmt --all -- --check
+
+# 2. Clippy — default features (CLI + native library).
+cargo clippy --all-targets -- -D warnings
+
+# 3. Clippy — WASM feature, cross-compiled to wasm32 so wasm-bindgen
+#    macros type-check correctly. Requires the target to be installed:
+#    rustup target add wasm32-unknown-unknown
+cargo clippy --no-default-features --features wasm \
+    --target wasm32-unknown-unknown --lib -- -D warnings
+```
+
+To auto-fix formatting instead of just checking: `cargo fmt --all`.
+
 ### Fuzzing
 
 A `cargo-fuzz` harness lives in [`fuzz/`](fuzz/) with four targets:

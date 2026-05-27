@@ -183,8 +183,8 @@ impl SecretKey {
 /// the zero scalar is rejected because its public key is the identity
 /// point.
 fn parse_secret_scalar(bytes: &[u8; 32]) -> Result<Scalar> {
-    let scalar = Option::<Scalar>::from(Scalar::from_canonical_bytes(*bytes))
-        .ok_or(Error::InvalidScalar)?;
+    let scalar =
+        Option::<Scalar>::from(Scalar::from_canonical_bytes(*bytes)).ok_or(Error::InvalidScalar)?;
     if scalar == Scalar::ZERO {
         return Err(Error::InvalidSecretKey);
     }

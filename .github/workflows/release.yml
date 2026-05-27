@@ -14,7 +14,10 @@
 #   5. cryptovote-riscv64gc-unknown-linux-gnu.tar.gz — RISC-V 64 Linux CLI (glibc-linked)
 #   6. cryptovote-aarch64-apple-darwin.tar.gz       — Apple Silicon macOS CLI
 #   7. crypto_vote-wasm-browser.tar.gz              — wasm-pack bundle for browsers (wasm-bindgen)
-#   8. crypto_vote-extism.tar.gz                    — single `.wasm` for every Extism host SDK
+#   8. crypto_vote-extism.wasm                      — single `.wasm` for every Extism host SDK
+#                                                     (shipped raw, not tarred: it is a single
+#                                                     file fed straight to a host SDK, and the
+#                                                     .sha256 then attests the exact bytes loaded)
 #
 # Note on item 4: `wasm64-unknown-unknown` is a Tier 3 target requiring
 # nightly Rust, and several transitive dependencies (notably
@@ -221,20 +224,22 @@ jobs:
         run: cargo build --profile wasm-release --locked --target wasm32-wasip1 --lib --no-default-features --features extism
 
       - name: Package Extism plugin
+        # Ship the `.wasm` raw rather than tarred: it is a single file
+        # handed straight to a host SDK (`extism call …`, @extism/extism,
+        # the Python/Go/Rust SDKs), so there is nothing to extract and no
+        # README to bundle. Hashing the bare file means the .sha256
+        # attests exactly the bytes a host loads, with no tar/gzip
+        # metadata in between.
         run: |
-          STAGING="crypto_vote-extism"
-          mkdir "$STAGING"
-          cp target/wasm32-wasip1/wasm-release/crypto_vote.wasm "$STAGING/crypto_vote-extism.wasm"
-          cp README.md "$STAGING/" 2>/dev/null || true
-          tar -czf "${STAGING}.tar.gz" "$STAGING"
-          sha256sum "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
+          cp target/wasm32-wasip1/wasm-release/crypto_vote.wasm crypto_vote-extism.wasm
+          sha256sum crypto_vote-extism.wasm > crypto_vote-extism.wasm.sha256
 
       - uses: actions/upload-artifact@v7
         with:
           name: crypto_vote-extism
           path: |
-            crypto_vote-extism.tar.gz
-            crypto_vote-extism.tar.gz.sha256
+            crypto_vote-extism.wasm
+            crypto_vote-extism.wasm.sha256
           if-no-files-found: error
 
   publish:
@@ -264,7 +269,7 @@ jobs:
         # into one directory.
         run: |
           mkdir release-files
-          find artefacts -type f \( -name "*.tar.gz" -o -name "*.sha256" \) -exec mv {} release-files/ \;
+          find artefacts -type f \( -name "*.tar.gz" -o -name "*.wasm" -o -name "*.sha256" \) -exec mv {} release-files/ \;
           ls -la release-files
 
       - name: Create / update GitHub Release

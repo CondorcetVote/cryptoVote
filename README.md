@@ -464,6 +464,7 @@ file:
 ```js
 import init, {
     generate_identity_wasm,
+    derive_public_key_wasm,
     sign_vote_str_wasm,    // text ballot
     sign_vote_bytes_wasm,  // binary ballot (Uint8Array)
     verify_vote_str_wasm,
@@ -531,6 +532,30 @@ if (!is_valid_secret_key_wasm(secretBytes)) {
 
 Returns `false` (never throws) on any malformed input: wrong length,
 non-canonical encoding, or the zero scalar.
+
+### Recovering a public key from a stored secret
+
+`derive_public_key_wasm` re-derives the public key from a 32-byte secret key.
+The derivation is a pure scalar multiplication — no randomness — so the same
+secret always yields the same public key. Useful when a caller has persisted
+the secret key but needs to recover or re-display the corresponding public key
+(e.g. to re-register after a device migration, or to display a voter's ring
+entry in the UI without storing the public key separately).
+
+The input is wrapped in `Zeroizing` on the Rust side; wipe the JS-side
+`Uint8Array` with `.fill(0)` once the call returns.
+
+```js
+const secretBytes = await loadVoterSecret();
+let publicHex;
+try {
+    // Returns the 64-character hex public key, or throws on malformed input
+    // (wrong length, non-canonical encoding, zero scalar).
+    publicHex = derive_public_key_wasm(secretBytes);
+} finally {
+    secretBytes.fill(0);
+}
+```
 
 ### Operation B — sign a ballot
 
@@ -699,6 +724,7 @@ Sign and verify each come in two flavours, differing only in how the
 | Plugin function | JSON input | JSON output |
 |---|---|---|
 | `generate_identity` | *(empty)* | `{"secret": <hex64>, "public": <hex64>}` |
+| `derive_public_key` | `{"secret": <hex64>}` | `{"public": <hex64>}` |
 | `sign_vote_str` | `{"secret": <hex64>, "vote": <str>, "election_id": <str>, "ring": [<hex64>, …]}` | `{"signature": <hex>, "key_image": <hex64>}` |
 | `sign_vote_hex` | `{"secret": <hex64>, "vote": <hex>, "election_id": <str>, "ring": [<hex64>, …]}` | `{"signature": <hex>, "key_image": <hex64>}` |
 | `verify_vote_str` | `{"vote": <str>, "election_id": <str>, "signature": <hex>, "key_image": <hex64>, "ring": [<hex64>, …]}` | `{"valid": <bool>}` |
@@ -722,6 +748,19 @@ This is also what lets a ballot signed by either wasm-bindgen function
 verify here: only the vote bytes matter. A binary ballot signed in the
 browser with `sign_vote_bytes_wasm` is verified on the server by
 hex-encoding those stored bytes and calling `verify_vote_hex`.
+
+`derive_public_key` re-derives the public key from a stored secret key —
+useful when a caller has persisted only the secret and needs to recover the
+corresponding ring entry. Input: `{"secret": <hex64>}`. Output:
+`{"public": <hex64>}`. Errors (bad hex, wrong length, zero scalar) are
+returned as plugin-level errors. The Rust-side copy of the secret is wrapped
+in `Zeroizing`; the same JSON-buffer caveat as `sign_vote_*` applies.
+
+```bash
+extism call crypto_vote-extism.wasm derive_public_key \
+    --input '{"secret":"<hex64>"}' --wasi
+# → {"public":"<hex64>"}
+```
 
 `is_valid_secret_key` is a pure utility that mirrors
 `SecretKey::is_valid_hex`: it returns `{"valid": false}` (never an

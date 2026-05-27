@@ -15,6 +15,7 @@
 //! | Plugin function   | JSON input shape                                                              | JSON output shape                |
 //! |-------------------|-------------------------------------------------------------------------------|----------------------------------|
 //! | `generate_identity`    | *(empty)*                                                                   | `{"secret": hex64, "public": hex64}` |
+//! | `derive_public_key`    | `{"secret": hex64}`                                                          | `{"public": hex64}`               |
 //! | `sign_vote_str`        | `{"secret": hex64, "vote": str, "election_id": str, "ring": [hex64, …]}`    | `{"signature": hex, "key_image": hex64}` |
 //! | `sign_vote_hex`        | `{"secret": hex64, "vote": hex, "election_id": str, "ring": [hex64, …]}`    | `{"signature": hex, "key_image": hex64}` |
 //! | `verify_vote_str`      | `{"vote": str, "election_id": str, "signature": hex, "key_image": hex64, "ring": [hex64, …]}` | `{"valid": bool}` |
@@ -70,6 +71,38 @@ pub fn generate_identity() -> FnResult<Json<IdentityOut>> {
     Ok(Json(IdentityOut {
         secret: id.secret_key.to_hex(),
         public: id.public_key.to_hex(),
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct DerivePublicIn {
+    pub secret: String,
+}
+
+#[derive(Serialize)]
+pub struct DerivePublicOut {
+    /// Hex-encoded public key (64 lowercase chars).
+    pub public: String,
+}
+
+/// Derive the public key matching a secret key.
+///
+/// Input: `{"secret": hex64}` — the 64-character hex encoding of the secret scalar.
+/// Output: `{"public": hex64}` — the matching public key.
+///
+/// The derivation is a pure scalar multiplication on Ristretto255 —
+/// no randomness — so the same secret always yields the same public key.
+/// Useful when a caller has stored the secret key but needs to recover
+/// or re-display the corresponding public key.
+///
+/// The secret is wrapped in `Zeroizing` so its Rust-side heap allocation
+/// is overwritten before this function returns.
+#[plugin_fn]
+pub fn derive_public_key(Json(input): Json<DerivePublicIn>) -> FnResult<Json<DerivePublicOut>> {
+    let secret = Zeroizing::new(input.secret);
+    let sk = SecretKey::from_hex(&secret)?;
+    Ok(Json(DerivePublicOut {
+        public: sk.public_key().to_hex(),
     }))
 }
 

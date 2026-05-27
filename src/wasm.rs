@@ -178,6 +178,34 @@ pub fn is_valid_secret_key_wasm(secret_bytes: Vec<u8>) -> bool {
     SecretKey::is_valid_bytes(arr)
 }
 
+/// Derive the public key matching a secret key.
+///
+/// `secret_bytes` is the 32-byte raw secret key (a `Uint8Array`).
+/// Returns the 64-character hex encoding of the matching public key,
+/// or a JS error string if `secret_bytes` is malformed (wrong length,
+/// non-canonical encoding, zero scalar).
+///
+/// The derivation is a pure scalar multiplication on Ristretto255 —
+/// no randomness — so the same `secret_bytes` always yields the same
+/// public key. Useful when a caller has persisted the secret key but
+/// needs to recover or re-display the corresponding public key.
+///
+/// The input is wrapped in `Zeroizing` so the WASM-internal copy is
+/// overwritten before its allocation is freed. The JS caller should
+/// still `.fill(0)` its own `Uint8Array` once the call has returned.
+#[wasm_bindgen]
+pub fn derive_public_key_wasm(secret_bytes: Vec<u8>) -> Result<String, JsValue> {
+    let secret = Zeroizing::new(secret_bytes);
+    let arr: &[u8; 32] = secret[..].try_into().map_err(|_| {
+        JsValue::from_str(&format!(
+            "secret must be exactly 32 bytes, got {}",
+            secret.len()
+        ))
+    })?;
+    let sk = SecretKey::from_bytes(arr).map_err(err_to_js)?;
+    Ok(sk.public_key().to_hex())
+}
+
 /// Browser-facing version of [`crate::verify_vote`] for a **text
 /// ballot**: `vote` is a `&str`, hashed as its UTF-8 bytes. The
 /// counterpart of [`sign_vote_str_wasm`] / Extism `verify_vote_str`.

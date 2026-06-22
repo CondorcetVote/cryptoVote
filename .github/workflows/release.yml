@@ -1,5 +1,5 @@
-# Release pipeline — builds the four distributable artefacts and
-# attaches them to a GitHub Release.
+# Release pipeline — builds the distributable artefacts, attaches them
+# to a GitHub Release, and publishes the npm package.
 #
 # Triggered by pushing an annotated tag of the form `vX.Y.Z`. Manual
 # dispatch is also supported so a maintainer can dry-run the matrix
@@ -13,11 +13,18 @@
 #   4. cryptovote-aarch64-unknown-linux-musl.tar.gz — ARM64 Linux CLI (fully static musl)
 #   5. cryptovote-riscv64gc-unknown-linux-gnu.tar.gz — RISC-V 64 Linux CLI (glibc-linked)
 #   6. cryptovote-aarch64-apple-darwin.tar.gz       — Apple Silicon macOS CLI
-#   7. crypto_vote-wasm-browser.tar.gz              — wasm-pack bundle for browsers (wasm-bindgen)
+#   7. crypto_vote-wasm-browser.tar.gz              — wasm-pack bundle for browsers (wasm-bindgen,
+#                                                     --target web: native ESM, no bundler needed)
 #   8. crypto_vote-extism.wasm                      — single `.wasm` for every Extism host SDK
 #                                                     (shipped raw, not tarred: it is a single
 #                                                     file fed straight to a host SDK, and the
 #                                                     .sha256 then attests the exact bytes loaded)
+#
+# npm:
+#   @condorcet.vote/crypto-vote                      — wasm-pack bundle for bundlers (webpack,
+#                                                     vite, rollup; --target bundler). Published
+#                                                     to npmjs.com on every tag push. Requires
+#                                                     an NPM_TOKEN secret with Automation scope.
 #
 # Note on item 4: `wasm64-unknown-unknown` is a Tier 3 target requiring
 # nightly Rust, and several transitive dependencies (notably
@@ -89,7 +96,7 @@ jobs:
             os: macos-latest
             apt: ""
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain (${{ matrix.target }})
         uses: dtolnay/rust-toolchain@stable
@@ -142,7 +149,7 @@ jobs:
     name: WASM — browser (wasm32-unknown-unknown via wasm-pack)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain (wasm32-unknown-unknown)
         uses: dtolnay/rust-toolchain@stable
@@ -202,7 +209,7 @@ jobs:
     name: WASM — Extism plugin (wasm32-wasip1)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain (wasm32-wasip1)
         uses: dtolnay/rust-toolchain@stable
@@ -241,6 +248,93 @@ jobs:
             crypto_vote-extism.wasm
             crypto_vote-extism.wasm.sha256
           if-no-files-found: error
+
+  build-wasm-npm:
+    name: WASM — npm bundle (wasm32-unknown-unknown via wasm-pack, bundler target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain (wasm32-unknown-unknown)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Separate key from the `web` build: both jobs can run in parallel
+          # and would otherwise race writing to the same cache entry.
+          key: wasm32-unknown-unknown-npm
+
+      - name: Install wasm-pack
+        # See `build-wasm-browser` for why `cargo install` rather than the
+        # official installer script.
+        run: cargo install wasm-pack --locked
+
+      - name: Build npm bundle (bundler target)
+        # `--target bundler` emits CommonJS/ESM glue compatible with webpack,
+        # vite, and rollup. Unlike `--target web` the caller does not need an
+        # explicit `await init()` call — the bundler handles WASM loading.
+        run: |
+          wasm-pack build \
+            --profile wasm-release \
+            --target bundler \
+            --out-dir pkg-npm \
+            -- \
+            --no-default-features \
+            --features wasm \
+            --locked
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: crypto_vote-wasm-npm
+          path: pkg-npm/
+          if-no-files-found: error
+
+  publish-npm:
+    name: Publish — npmjs (@condorcet.vote/crypto-vote)
+    # Only fire on tag pushes. Manual `workflow_dispatch` runs build the
+    # artefact above (useful for smoke-testing the pipeline) but skip
+    # the publish step to avoid accidental releases.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build-wasm-npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for OIDC Trusted Publishing: npm verifies the short-lived
+      # id-token against the trusted publisher configuration set on npmjs.com.
+      # No NPM_TOKEN secret is needed.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: crypto_vote-wasm-npm
+          path: pkg-npm
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Set package name and version
+        # wasm-pack derives the package name from the Cargo crate name
+        # (`crypto-vote`). Override it to the published scope + name, and
+        # align the version with the git tag (strip the leading `v`).
+        run: |
+          cd pkg-npm
+          npm pkg set name="@condorcet.vote/crypto-vote"
+          npm pkg set version="${GITHUB_REF_NAME#v}"
+
+      - name: Update npm for OIDC Trusted Publishing
+        # OIDC Trusted Publishing requires npm >= 11.5.1; the runner ships
+        # an older version.
+        run: sudo npm install -g npm@latest
+
+      - name: Publish to npm
+        # `--access public` is required for scoped packages to be publicly
+        # accessible. Authentication is handled by the OIDC id-token above —
+        # no NODE_AUTH_TOKEN needed.
+        run: cd pkg-npm && npm publish --access public
 
   publish:
     name: Publish GitHub Release

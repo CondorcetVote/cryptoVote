@@ -437,12 +437,40 @@ cat ballot.json | cryptovote verify --vote - \
 ## Using from JavaScript / WebAssembly
 
 The library exposes a thin `wasm-bindgen` layer behind the `wasm`
-feature. The recipe below assumes `--target web`, which produces an ES
-module you can `import` directly from a static page; for bundler
-setups (Webpack, Vite, …) build with `--target bundler` instead — the
-function signatures are identical, only the import boilerplate changes.
+feature. Two consumption paths are available — pick the one that
+matches your setup:
 
-### Build
+| Path | When to use | Init call needed? |
+|------|-------------|-------------------|
+| **npm package** (`@condorcet.vote/crypto-vote`) | Bundler project (Webpack, Vite, Rollup, …) | No — the bundler handles WASM loading |
+| **Self-built `--target web`** | Static page / no bundler | Yes — explicit `await init()` once |
+
+### Install from npm
+
+```bash
+npm install @condorcet.vote/crypto-vote
+```
+
+The package is published to [npmjs.com](https://www.npmjs.com/package/@condorcet.vote/crypto-vote)
+on every release and targets the `bundler` target — no `await init()`
+call required, the bundler handles WASM instantiation:
+
+```js
+import {
+    generate_identity_wasm,
+    derive_public_key_wasm,
+    sign_vote_str_wasm,    // text ballot
+    sign_vote_bytes_wasm,  // binary ballot (Uint8Array)
+    verify_vote_str_wasm,
+    verify_vote_bytes_wasm,
+    is_valid_secret_key_wasm,
+} from "@condorcet.vote/crypto-vote";
+
+// No `await init()` — functions are ready to call immediately.
+const [secretBytes, publicHex] = generate_identity_wasm();
+```
+
+### Build from source
 
 See the [Build matrix](#build-matrix) above for the full command and
 flag breakdown. The short version, run from the crate root:
@@ -455,11 +483,12 @@ The resulting `pkg/` directory contains the `.wasm` artefact and the
 JS glue. Copy it next to your page (or import it through your
 bundler).
 
-### Initialise the module
+### Initialise the module (self-built `--target web` only)
 
 With `--target web` you must `await` the default export exactly once
 before calling anything else; it streams and instantiates the `.wasm`
-file:
+file. **Skip this step if you installed from npm** — the bundler
+target does not export an `init` function:
 
 ```js
 import init, {

@@ -8,6 +8,7 @@ edition = "2024"
 description = "An agnostic cryptographic oracle for verifiable voting using linkable ring signatures (BLSAG) over Ristretto255, with Blake2b-512 as the hash function."
 license = "AGPL-3.0-or-later"
 readme = "README.md"
+repository = "https://github.com/CondorcetVote/cryptoVote"
 keywords = ["voting", "cryptography", "ring-signature", "blsag", "blake2"]
 categories = ["cryptography", "wasm"]
 

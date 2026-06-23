@@ -198,8 +198,10 @@ wasm-pack build --profile wasm-release --target web --out-dir pkg-browser \
 # → pkg-browser/{crypto_vote.js, crypto_vote_bg.wasm, …}
 ```
 
-`--target web` emits an ES module you can `import` from a static page;
-switch to `--target bundler` for Webpack/Vite (signatures unchanged).
+`--target web` emits a self-contained ES module you can `import` from a
+static page, a bundler (Vite, Rollup, esbuild), Bun, or Node — it
+instantiates the WASM itself via an async `init()`, so no bundler plugin
+is required anywhere. This is the build published to npm.
 `--no-default-features` drops `clap`; `--features wasm` enables
 `wasm-bindgen`, `js-sys`, and the `getrandom/wasm_js` backend so
 randomness comes from `Crypto.getRandomValues`.
@@ -437,13 +439,12 @@ cat ballot.json | cryptovote verify --vote - \
 ## Using from JavaScript / WebAssembly
 
 The library exposes a thin `wasm-bindgen` layer behind the `wasm`
-feature. Two consumption paths are available — pick the one that
-matches your setup:
-
-| Path | When to use | Init call needed? |
-|------|-------------|-------------------|
-| **npm package** (`@condorcet.vote/crypto-vote`) | Bundler project (Webpack, Vite, Rollup, …) | No — the bundler handles WASM loading |
-| **Self-built `--target web`** | Static page / no bundler | Yes — explicit `await init()` once |
+feature. The npm package and a self-built bundle are the **same**
+`--target web` artefact: a self-contained ES module that instantiates
+the WASM itself through an async `init()` default export. It works
+the same everywhere — a bundler (Vite, Rollup, esbuild), Bun, Node, or
+a plain `<script type="module">` — with **no bundler plugin required**.
+You call `await init()` exactly once.
 
 ### Install from npm
 
@@ -452,11 +453,10 @@ npm install @condorcet.vote/crypto-vote
 ```
 
 The package is published to [npmjs.com](https://www.npmjs.com/package/@condorcet.vote/crypto-vote)
-on every release and targets the `bundler` target — no `await init()`
-call required, the bundler handles WASM instantiation:
+on every release:
 
 ```js
-import {
+import init, {
     generate_identity_wasm,
     derive_public_key_wasm,
     sign_vote_str_wasm,    // text ballot
@@ -466,9 +466,17 @@ import {
     is_valid_secret_key_wasm,
 } from "@condorcet.vote/crypto-vote";
 
-// No `await init()` — functions are ready to call immediately.
+// Instantiate the WASM once. A bundler resolves the .wasm asset for you;
+// no plugin needed. Then every function is ready to call.
+await init();
 const [secretBytes, publicHex] = generate_identity_wasm();
 ```
+
+> Why `--target web` and not `--target bundler`? The `bundler` target
+> relies on the non-standard WebAssembly/ESM-integration that only
+> webpack implements, so it breaks under Vite (needs `vite-plugin-wasm`)
+> and Bun (treats the `.wasm` as a static asset). `--target web` is the
+> portable choice.
 
 ### Build from source
 
@@ -480,15 +488,14 @@ wasm-pack build --profile wasm-release --target web -- --no-default-features --f
 ```
 
 The resulting `pkg/` directory contains the `.wasm` artefact and the
-JS glue. Copy it next to your page (or import it through your
-bundler).
+JS glue — the same files the npm package ships. Copy it next to your
+page or import it through your bundler.
 
-### Initialise the module (self-built `--target web` only)
+### Initialise the module
 
-With `--target web` you must `await` the default export exactly once
-before calling anything else; it streams and instantiates the `.wasm`
-file. **Skip this step if you installed from npm** — the bundler
-target does not export an `init` function:
+`await` the default export exactly once before calling anything else;
+it streams and instantiates the `.wasm` file. This applies to both the
+npm package and a self-built bundle:
 
 ```js
 import init, {
@@ -499,7 +506,7 @@ import init, {
     verify_vote_str_wasm,
     verify_vote_bytes_wasm,
     is_valid_secret_key_wasm,
-} from "./pkg/crypto_vote.js";
+} from "@condorcet.vote/crypto-vote"; // or "./pkg/crypto_vote.js" when self-built
 
 await init();
 ```

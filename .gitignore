@@ -5,6 +5,8 @@ Cargo.lock.bak
 
 # WebAssembly build output
 /pkg/
+/pkg-browser/
+/pkg-npm/
 /wasm-pack.log
 
 # IDE / editor files

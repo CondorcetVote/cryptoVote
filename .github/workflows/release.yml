@@ -14,17 +14,30 @@
 #   5. cryptovote-riscv64gc-unknown-linux-gnu.tar.gz — RISC-V 64 Linux CLI (glibc-linked)
 #   6. cryptovote-aarch64-apple-darwin.tar.gz       — Apple Silicon macOS CLI
 #   7. crypto_vote-wasm-browser.tar.gz              — wasm-pack bundle for browsers (wasm-bindgen,
-#                                                     --target web: native ESM, no bundler needed)
+#                                                     --target web: native ESM, no bundler needed).
+#                                                     This is also the exact package published to
+#                                                     npm (see below).
 #   8. crypto_vote-extism.wasm                      — single `.wasm` for every Extism host SDK
 #                                                     (shipped raw, not tarred: it is a single
 #                                                     file fed straight to a host SDK, and the
 #                                                     .sha256 then attests the exact bytes loaded)
 #
 # npm:
-#   @condorcet.vote/crypto-vote                      — wasm-pack bundle for bundlers (webpack,
-#                                                     vite, rollup; --target bundler). Published
-#                                                     to npmjs.com on every tag push. Requires
-#                                                     an NPM_TOKEN secret with Automation scope.
+#   @condorcet.vote/crypto-vote                      — the wasm-pack `--target web` bundle (the same
+#                                                     pkg-browser artefact as item 7). `--target web`
+#                                                     emits a self-contained ESM with an async
+#                                                     `init()` default export, instantiating the
+#                                                     WASM itself via `new URL(..., import.meta.url)`
+#                                                     + WebAssembly.instantiate. This works with no
+#                                                     bundler at all and with every modern toolchain
+#                                                     (Vite, Rollup, esbuild, Bun, Node) WITHOUT a
+#                                                     plugin. The old `--target bundler` build was
+#                                                     dropped: it relies on the non-standard
+#                                                     WASM/ESM-integration that only webpack
+#                                                     implements, so it broke under Vite (needs
+#                                                     vite-plugin-wasm) and Bun (treats the .wasm as
+#                                                     a static asset). Published to npmjs.com on
+#                                                     every tag push via OIDC Trusted Publishing.
 #
 # Note on item 4: `wasm64-unknown-unknown` is a Tier 3 target requiring
 # nightly Rust, and several transitive dependencies (notably
@@ -205,6 +218,15 @@ jobs:
             crypto_vote-wasm-browser.tar.gz.sha256
           if-no-files-found: error
 
+      - name: Upload raw pkg-browser dir (for npm publish)
+        # The tarball above is the GitHub Release asset; npm publish needs the
+        # unpacked package directory, so upload it separately.
+        uses: actions/upload-artifact@v7
+        with:
+          name: crypto_vote-pkg-browser
+          path: pkg-browser/
+          if-no-files-found: error
+
   build-wasm-extism:
     name: WASM — Extism plugin (wasm32-wasip1)
     runs-on: ubuntu-latest
@@ -249,56 +271,16 @@ jobs:
             crypto_vote-extism.wasm.sha256
           if-no-files-found: error
 
-  build-wasm-npm:
-    name: WASM — npm bundle (wasm32-unknown-unknown via wasm-pack, bundler target)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust toolchain (wasm32-unknown-unknown)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Separate key from the `web` build: both jobs can run in parallel
-          # and would otherwise race writing to the same cache entry.
-          key: wasm32-unknown-unknown-npm
-
-      - name: Install wasm-pack
-        # See `build-wasm-browser` for why `cargo install` rather than the
-        # official installer script.
-        run: cargo install wasm-pack --locked
-
-      - name: Build npm bundle (bundler target)
-        # `--target bundler` emits CommonJS/ESM glue compatible with webpack,
-        # vite, and rollup. Unlike `--target web` the caller does not need an
-        # explicit `await init()` call — the bundler handles WASM loading.
-        run: |
-          wasm-pack build \
-            --profile wasm-release \
-            --target bundler \
-            --out-dir pkg-npm \
-            -- \
-            --no-default-features \
-            --features wasm \
-            --locked
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: crypto_vote-wasm-npm
-          path: pkg-npm/
-          if-no-files-found: error
-
   publish-npm:
     name: Publish — npmjs (@condorcet.vote/crypto-vote)
     # Only fire on tag pushes. Manual `workflow_dispatch` runs build the
-    # artefact above (useful for smoke-testing the pipeline) but skip
+    # browser artefact (useful for smoke-testing the pipeline) but skip
     # the publish step to avoid accidental releases.
     if: startsWith(github.ref, 'refs/tags/v')
     needs:
-      - build-wasm-npm
+      # Publish the very same `--target web` bundle built for the browser
+      # release asset — one artefact, one build, no bundler-specific variant.
+      - build-wasm-browser
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -308,8 +290,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: crypto_vote-wasm-npm
-          path: pkg-npm
+          name: crypto_vote-pkg-browser
+          path: pkg-browser
 
       - uses: actions/setup-node@v6
         with:
@@ -321,7 +303,7 @@ jobs:
         # (`crypto-vote`). Override it to the published scope + name, and
         # align the version with the git tag (strip the leading `v`).
         run: |
-          cd pkg-npm
+          cd pkg-browser
           npm pkg set name="@condorcet.vote/crypto-vote"
           npm pkg set version="${GITHUB_REF_NAME#v}"
 
@@ -334,7 +316,7 @@ jobs:
         # `--access public` is required for scoped packages to be publicly
         # accessible. Authentication is handled by the OIDC id-token —
         # no NODE_AUTH_TOKEN needed.
-        run: cd pkg-npm && npm publish --access public
+        run: cd pkg-browser && npm publish --access public
 
   publish:
     name: Publish GitHub Release

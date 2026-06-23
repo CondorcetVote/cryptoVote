@@ -62,10 +62,16 @@ blake2 = { version = "0.11.0-rc.6", default-features = false }
 # Hash used *only* for the human-friendly prefixed encoding's checksum
 # (see `src/encoding.rs`). This is an integrity / typo-detection digest,
 # not a protocol-security primitive — the protocol itself is Blake2b-512
-# everywhere. BLAKE3 is chosen here for its speed and simple one-shot
-# API; `default-features = false` keeps it `no_std` (no SIMD runtime
-# detection, no `cc` build step) so it stays small in the WASM bundles.
-blake3 = { version = "1", default-features = false }
+# everywhere. BLAKE3 is chosen here for its simple one-shot API.
+#
+# `default-features = false` drops `std`; `features = ["pure"]` forces
+# the portable Rust implementation so BLAKE3's build script does NOT
+# compile its C / assembly SIMD kernels. Without `pure`, `cc-rs` needs a
+# target C compiler (e.g. `aarch64-linux-musl-gcc`) that the cross builds
+# do not have, which breaks the musl / cross targets — and it bloats the
+# WASM bundles. The checksum hashes only a few hundred bytes, so the
+# portable path's lower throughput is irrelevant here.
+blake3 = { version = "1", default-features = false, features = ["pure"] }
 
 # `SysRng` is what feeds BLSAG signing; on WebAssembly it delegates to
 # `getrandom` (which itself uses `Crypto.getRandomValues` when the

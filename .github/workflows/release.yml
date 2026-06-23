@@ -302,6 +302,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Required for OIDC Trusted Publishing: npm verifies the short-lived
+      # id-token against the trusted publisher configuration set on npmjs.com.
+      id-token: write
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -322,12 +325,15 @@ jobs:
           npm pkg set name="@condorcet.vote/crypto-vote"
           npm pkg set version="${GITHUB_REF_NAME#v}"
 
+      - name: Update npm for OIDC Trusted Publishing
+        # OIDC Trusted Publishing requires npm >= 11.5.1; the runner ships
+        # an older version.
+        run: sudo npm install -g npm@latest
+
       - name: Publish to npm
         # `--access public` is required for scoped packages to be publicly
-        # accessible. NODE_AUTH_TOKEN is read by npm when registry-url is
-        # set in setup-node above.
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPMJS_TOKEN }}
+        # accessible. Authentication is handled by the OIDC id-token —
+        # no NODE_AUTH_TOKEN needed.
         run: cd pkg-npm && npm publish --access public
 
   publish:

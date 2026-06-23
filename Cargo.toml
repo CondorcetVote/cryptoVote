@@ -47,7 +47,7 @@ extism = ["dep:extism-pdk", "dep:serde"]
 # implementation needs `digest` for `RistrettoPoint::from_hash`,
 # `rand_core` for scalar / point sampling in signing and tests, and
 # `zeroize` so `SecretKey` can wipe its scalar on drop.
-curve25519-dalek = { version = "5.0.0-pre.6", features = ["digest", "rand_core", "zeroize"] }
+curve25519-dalek = { version = "5.0.0-rc.1", features = ["digest", "rand_core", "zeroize"] }
 
 # Wipe secret scalars when their wrapper leaves scope.
 zeroize = "1"

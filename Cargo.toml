@@ -59,6 +59,14 @@ zeroize = "1"
 # consume. The 0.11 release candidate matches curve25519-dalek 5's digest API.
 blake2 = { version = "0.11.0-rc.6", default-features = false }
 
+# Hash used *only* for the human-friendly prefixed encoding's checksum
+# (see `src/encoding.rs`). This is an integrity / typo-detection digest,
+# not a protocol-security primitive — the protocol itself is Blake2b-512
+# everywhere. BLAKE3 is chosen here for its speed and simple one-shot
+# API; `default-features = false` keeps it `no_std` (no SIMD runtime
+# detection, no `cc` build step) so it stays small in the WASM bundles.
+blake3 = { version = "1", default-features = false }
+
 # `SysRng` is what feeds BLSAG signing; on WebAssembly it delegates to
 # `getrandom` (which itself uses `Crypto.getRandomValues` when the
 # `wasm` feature enables `getrandom/wasm_js`). We only need the

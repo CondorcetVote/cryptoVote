@@ -8,9 +8,11 @@
 //!    overwrite the buffer with `.fill(0)` once it has been persisted or
 //!    used, which is the only way to make the JS-side copy of the
 //!    secret unreadable to other scripts running in the page.
-//!  - **public material as hex strings** (public keys, signatures,
-//!    linking tags). These are not secret, and hex is what every host
-//!    API already passes around on the wire.
+//!  - **public material as prefixed strings** (public keys, signatures,
+//!    linking tags), both in and out — e.g. `pk_…_…`, `blsag_…_…`,
+//!    `ki_…_…`. This boundary speaks the prefixed format *exclusively*;
+//!    bare hex is rejected (it is only accepted by the pure-Rust library
+//!    API). None of this material is secret. See [`crate::encoding`].
 //!
 //! Inside Rust, every temporary buffer that holds secret bytes is
 //! wrapped in [`zeroize::Zeroizing`]. The wrapper ensures the WASM
@@ -36,26 +38,32 @@ fn err_to_js(e: Error) -> JsValue {
     JsValue::from_str(&format!("{e}"))
 }
 
-/// Parse a list of hex-encoded public keys.
-fn parse_ring(ring_hex: Vec<String>) -> Result<Vec<PublicKey>, JsValue> {
-    ring_hex
-        .into_iter()
-        .map(|h| PublicKey::from_hex(&h))
+// The browser bindings speak the prefixed format (`pk_…_…`, `blsag_…_…`,
+// `ki_…_…`) *exclusively*: it is what they emit and the only thing they
+// accept. Bare hex is reserved for the pure-Rust library API
+// (`from_hex`). Forcing the prefixed form at this boundary means every
+// value crossing into JS is self-describing and checksum-protected.
+
+/// Parse a list of prefixed public keys (`pk_…_…`).
+fn parse_ring(ring: Vec<String>) -> Result<Vec<PublicKey>, JsValue> {
+    ring.into_iter()
+        .map(|s| PublicKey::from_prefixed(&s))
         .collect::<Result<Vec<_>, _>>()
         .map_err(err_to_js)
 }
 
 /// Browser-facing version of [`crate::generate_identity`].
 ///
-/// Returns a `[secretBytes, publicHex]` pair as a `js_sys::Array`:
+/// Returns a `[secretBytes, publicKey]` pair as a `js_sys::Array`:
 ///
 ///  - `secretBytes` is a fresh `Uint8Array` of length 32. The JS caller
 ///    is expected to persist it (IndexedDB / encrypted storage) and
 ///    then call `.fill(0)` on it to wipe the in-memory copy. Failing to
 ///    do so leaves the secret readable by any other script with access
 ///    to the page's JS heap.
-///  - `publicHex` is the 64-character hex encoding of the public key —
-///    not secret, ready to be POSTed to the registrar.
+///  - `publicKey` is the prefixed encoding of the public key
+///    (`pk_<hex>_<checksum>`) — not secret, ready to be POSTed to the
+///    registrar.
 ///
 /// On the Rust side the intermediate `[u8; 32]` holding the secret
 /// bytes is wrapped in `Zeroizing` so the WASM linear-memory region
@@ -72,7 +80,7 @@ pub fn generate_identity_wasm() -> js_sys::Array {
 
     let arr = js_sys::Array::new();
     arr.push(&secret_js);
-    arr.push(&JsValue::from_str(&id.public_key.to_hex()));
+    arr.push(&JsValue::from_str(&id.public_key.to_prefixed()));
     arr
     // `secret_bytes` drops here; its memory is zeroed.
 }
@@ -93,9 +101,9 @@ pub fn sign_vote_str_wasm(
     secret_bytes: Vec<u8>,
     vote: &str,
     election_id: &str,
-    ring_hex: Vec<String>,
+    ring: Vec<String>,
 ) -> Result<js_sys::Array, JsValue> {
-    sign_vote_inner(secret_bytes, vote.as_bytes(), election_id, ring_hex)
+    sign_vote_inner(secret_bytes, vote.as_bytes(), election_id, ring)
 }
 
 /// Browser-facing version of [`crate::sign_vote`] for a **binary ballot**.
@@ -115,16 +123,16 @@ pub fn sign_vote_str_wasm(
 /// is normalised to Unicode NFC inside the crate before hashing (the
 /// vote is *not*; it is hashed verbatim).
 ///
-/// Returns a `[signatureHex, keyImageHex]` pair as a `js_sys::Array`.
-/// Neither value is secret; hex is convenient for the host API.
+/// Returns a `[signature, keyImage]` pair as a `js_sys::Array`, both in
+/// the prefixed form (`blsag_…_…`, `ki_…_…`). Neither value is secret.
 #[wasm_bindgen]
 pub fn sign_vote_bytes_wasm(
     secret_bytes: Vec<u8>,
     vote: &[u8],
     election_id: &str,
-    ring_hex: Vec<String>,
+    ring: Vec<String>,
 ) -> Result<js_sys::Array, JsValue> {
-    sign_vote_inner(secret_bytes, vote, election_id, ring_hex)
+    sign_vote_inner(secret_bytes, vote, election_id, ring)
 }
 
 /// Shared signing core for both `sign_vote_*_wasm` entry points:
@@ -133,7 +141,7 @@ fn sign_vote_inner(
     secret_bytes: Vec<u8>,
     vote: &[u8],
     election_id: &str,
-    ring_hex: Vec<String>,
+    ring: Vec<String>,
 ) -> Result<js_sys::Array, JsValue> {
     // Wrap the WASM-side copy of the secret immediately. Whatever path
     // we take from here (early error, success, panic), the bytes will
@@ -150,12 +158,12 @@ fn sign_vote_inner(
     // function exits, no readable copy of the secret remains on the
     // Rust side.
     let sk = SecretKey::from_bytes(secret_arr).map_err(err_to_js)?;
-    let ring = parse_ring(ring_hex)?;
+    let ring = parse_ring(ring)?;
     let proof = crate::sign_vote(&sk, vote, election_id, &ring).map_err(err_to_js)?;
 
     let arr = js_sys::Array::new();
-    arr.push(&JsValue::from_str(&proof.signature.to_hex()));
-    arr.push(&JsValue::from_str(&proof.key_image.to_hex()));
+    arr.push(&JsValue::from_str(&proof.signature.to_prefixed()));
+    arr.push(&JsValue::from_str(&proof.key_image.to_prefixed()));
     Ok(arr)
 }
 
@@ -181,9 +189,9 @@ pub fn is_valid_secret_key_wasm(secret_bytes: Vec<u8>) -> bool {
 /// Derive the public key matching a secret key.
 ///
 /// `secret_bytes` is the 32-byte raw secret key (a `Uint8Array`).
-/// Returns the 64-character hex encoding of the matching public key,
-/// or a JS error string if `secret_bytes` is malformed (wrong length,
-/// non-canonical encoding, zero scalar).
+/// Returns the prefixed encoding of the matching public key
+/// (`pk_<hex>_<checksum>`), or a JS error string if `secret_bytes` is
+/// malformed (wrong length, non-canonical encoding, zero scalar).
 ///
 /// The derivation is a pure scalar multiplication on Ristretto255 —
 /// no randomness — so the same `secret_bytes` always yields the same
@@ -203,7 +211,7 @@ pub fn derive_public_key_wasm(secret_bytes: Vec<u8>) -> Result<String, JsValue> 
         ))
     })?;
     let sk = SecretKey::from_bytes(arr).map_err(err_to_js)?;
-    Ok(sk.public_key().to_hex())
+    Ok(sk.public_key().to_prefixed())
 }
 
 /// Browser-facing version of [`crate::verify_vote`] for a **text
@@ -214,24 +222,19 @@ pub fn derive_public_key_wasm(secret_bytes: Vec<u8>) -> Result<String, JsValue> 
 pub fn verify_vote_str_wasm(
     vote: &str,
     election_id: &str,
-    signature_hex: &str,
-    key_image_hex: &str,
-    ring_hex: Vec<String>,
+    signature: &str,
+    key_image: &str,
+    ring: Vec<String>,
 ) -> bool {
-    verify_vote_inner(
-        vote.as_bytes(),
-        election_id,
-        signature_hex,
-        key_image_hex,
-        ring_hex,
-    )
+    verify_vote_inner(vote.as_bytes(), election_id, signature, key_image, ring)
 }
 
 /// Browser-facing version of [`crate::verify_vote`] for a **binary
 /// ballot**: `vote` is a `&[u8]` (a `Uint8Array`). The counterpart of
 /// [`sign_vote_bytes_wasm`] / Extism `verify_vote_hex`.
 ///
-/// No secret material is involved; everything else is hex. Returns a
+/// No secret material is involved; signature, key image and ring entries
+/// are all prefixed strings (bare hex is rejected). Returns a
 /// plain `bool`. Any input parsing error is mapped to `false`, because
 /// from the host's point of view "not a valid proof" and "not a
 /// parseable proof" are the same answer: reject.
@@ -239,30 +242,30 @@ pub fn verify_vote_str_wasm(
 pub fn verify_vote_bytes_wasm(
     vote: &[u8],
     election_id: &str,
-    signature_hex: &str,
-    key_image_hex: &str,
-    ring_hex: Vec<String>,
+    signature: &str,
+    key_image: &str,
+    ring: Vec<String>,
 ) -> bool {
-    verify_vote_inner(vote, election_id, signature_hex, key_image_hex, ring_hex)
+    verify_vote_inner(vote, election_id, signature, key_image, ring)
 }
 
 /// Shared verify core for both `verify_vote_*_wasm` entry points.
 fn verify_vote_inner(
     vote: &[u8],
     election_id: &str,
-    signature_hex: &str,
-    key_image_hex: &str,
-    ring_hex: Vec<String>,
+    signature: &str,
+    key_image: &str,
+    ring: Vec<String>,
 ) -> bool {
-    let ring = match parse_ring(ring_hex) {
+    let ring = match parse_ring(ring) {
         Ok(r) => r,
         Err(_) => return false,
     };
-    let signature = match Signature::from_hex(signature_hex, ring.len()) {
+    let signature = match Signature::from_prefixed(signature, ring.len()) {
         Ok(s) => s,
         Err(_) => return false,
     };
-    let key_image = match KeyImage::from_hex(key_image_hex) {
+    let key_image = match KeyImage::from_prefixed(key_image) {
         Ok(k) => k,
         Err(_) => return false,
     };

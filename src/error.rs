@@ -40,6 +40,23 @@ pub enum Error {
     /// The hex string handed to a `*_from_hex` constructor could not be
     /// decoded.
     InvalidHex,
+    /// A prefixed string (e.g. `pk_…`) handed to a `*_from_prefixed`
+    /// constructor was not in the expected three-part shape, or carried
+    /// the wrong tag for the type being decoded (e.g. a `ki_` value where
+    /// a `pk_` one was required).
+    InvalidPrefix {
+        /// The tag the constructor required, without the trailing `_`
+        /// (`"pk"`, `"sk"`, `"ki"` or `"blsag"`).
+        expected: &'static str,
+        /// The tag actually found, or empty when the string was not even
+        /// in `tag_body_checksum` shape. Never echoes the value's body,
+        /// so it cannot leak secret-key material.
+        got: String,
+    },
+    /// A prefixed string decoded structurally but its trailing checksum
+    /// did not match the body — the value was almost certainly mistyped,
+    /// truncated or corrupted in transit.
+    InvalidChecksum,
     /// `sign_vote` was called with a secret key whose public key is not
     /// in the supplied authorised ring. Signing would still mathematically
     /// produce something, but it would not verify, so we refuse it early.
@@ -80,6 +97,16 @@ impl fmt::Display for Error {
             Error::InvalidScalar => f.write_str("bytes do not encode a canonical scalar"),
             Error::InvalidSecretKey => f.write_str("secret key must be a non-zero scalar"),
             Error::InvalidHex => f.write_str("input is not valid hexadecimal"),
+            Error::InvalidPrefix { expected, got } => {
+                if got.is_empty() {
+                    write!(f, "expected a \"{expected}_\"-prefixed value")
+                } else {
+                    write!(f, "expected a \"{expected}_\" prefix, got \"{got}_\"")
+                }
+            }
+            Error::InvalidChecksum => {
+                f.write_str("checksum mismatch: the value was mistyped or corrupted")
+            }
             Error::SignerNotInRing => {
                 f.write_str("signer's public key is not part of the authorised ring")
             }

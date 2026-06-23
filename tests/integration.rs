@@ -51,6 +51,55 @@ fn serialised_proof_round_trip() {
 }
 
 #[test]
+fn serialised_proof_round_trip_prefixed() {
+    // Same as above, but over the human-friendly prefixed wire format.
+    // A host that stores `pk_…`, `blsag_…`, `ki_…` strings must be able
+    // to round-trip them back into a valid proof.
+    let (sk, ring) = fresh_election(4);
+    let ballot = b"option-X";
+    let proof = sign_vote(&sk, ballot, EID, &ring).unwrap();
+
+    let sig_str = proof.signature.to_prefixed();
+    let tag_str = proof.key_image.to_prefixed();
+    assert!(sig_str.starts_with("blsag_"));
+    assert!(tag_str.starts_with("ki_"));
+
+    let sig = Signature::from_prefixed(&sig_str, ring.len()).unwrap();
+    let tag = KeyImage::from_prefixed(&tag_str).unwrap();
+
+    let ring_prefixed: Vec<PublicKey> = ring
+        .iter()
+        .map(|pk| PublicKey::from_prefixed(&pk.to_prefixed()).unwrap())
+        .collect();
+    assert!(verify_vote(ballot, EID, &sig, &tag, &ring_prefixed));
+}
+
+#[test]
+fn prefixed_rejects_cross_type_and_corruption() {
+    // A key image string must not decode as a public key even though both
+    // are 32-byte payloads (wrong tag), and a flipped checksum digit must
+    // be rejected.
+    let (sk, ring) = fresh_election(3);
+    let proof = sign_vote(&sk, b"option-A", EID, &ring).unwrap();
+
+    let tag_str = proof.key_image.to_prefixed();
+    assert!(matches!(
+        PublicKey::from_prefixed(&tag_str),
+        Err(Error::InvalidPrefix { expected: "pk", .. })
+    ));
+
+    let pk_str = ring[0].to_prefixed();
+    let mut bytes = pk_str.into_bytes();
+    let last = bytes.last_mut().unwrap();
+    *last = if *last == b'0' { b'1' } else { b'0' };
+    let corrupted = String::from_utf8(bytes).unwrap();
+    assert_eq!(
+        PublicKey::from_prefixed(&corrupted).unwrap_err(),
+        Error::InvalidChecksum
+    );
+}
+
+#[test]
 fn host_can_detect_double_vote_via_tag() {
     // Two different ballots, same voter, same election → same key
     // image. This is the "deterministic tag" property the

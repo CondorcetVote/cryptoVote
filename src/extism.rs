@@ -10,17 +10,27 @@
 //!
 //! The plugin functions exported mirror the public API. Sign and verify
 //! each come in **two flavours** that differ only in how the `vote`
-//! field is carried over the JSON wire:
+//! field is carried over the JSON wire.
+//!
+//! ### Encoding of keys, tags and signatures
+//!
+//! Every key / signature field uses the human-friendly prefixed form
+//! (`pk_…_…`, `sk_…_…`, `ki_…_…`, `blsag_…_…`), both in and out. This
+//! boundary speaks the prefixed format **exclusively**: bare hex is
+//! rejected — it is only accepted by the pure-Rust library API. So
+//! `secret`, `public`, `signature`, `key_image` and every `ring` entry
+//! are prefixed strings. The `vote` field is unaffected (it is still a
+//! UTF-8 string or hex bytes).
 //!
 //! | Plugin function   | JSON input shape                                                              | JSON output shape                |
 //! |-------------------|-------------------------------------------------------------------------------|----------------------------------|
-//! | `generate_identity`    | *(empty)*                                                                   | `{"secret": hex64, "public": hex64}` |
-//! | `derive_public_key`    | `{"secret": hex64}`                                                          | `{"public": hex64}`               |
-//! | `sign_vote_str`        | `{"secret": hex64, "vote": str, "election_id": str, "ring": [hex64, …]}`    | `{"signature": hex, "key_image": hex64}` |
-//! | `sign_vote_hex`        | `{"secret": hex64, "vote": hex, "election_id": str, "ring": [hex64, …]}`    | `{"signature": hex, "key_image": hex64}` |
-//! | `verify_vote_str`      | `{"vote": str, "election_id": str, "signature": hex, "key_image": hex64, "ring": [hex64, …]}` | `{"valid": bool}` |
-//! | `verify_vote_hex`      | `{"vote": hex, "election_id": str, "signature": hex, "key_image": hex64, "ring": [hex64, …]}` | `{"valid": bool}` |
-//! | `is_valid_secret_key`  | `{"secret": hex64}`                                                          | `{"valid": bool}`                |
+//! | `generate_identity`    | *(empty)*                                                                   | `{"secret": sk_…, "public": pk_…}` |
+//! | `derive_public_key`    | `{"secret": sk_…}`                                                           | `{"public": pk_…}`                |
+//! | `sign_vote_str`        | `{"secret": sk_…, "vote": str, "election_id": str, "ring": [pk_…, …]}`       | `{"signature": blsag_…, "key_image": ki_…}` |
+//! | `sign_vote_hex`        | `{"secret": sk_…, "vote": hex, "election_id": str, "ring": [pk_…, …]}`       | `{"signature": blsag_…, "key_image": ki_…}` |
+//! | `verify_vote_str`      | `{"vote": str, "election_id": str, "signature": blsag_…, "key_image": ki_…, "ring": [pk_…, …]}` | `{"valid": bool}` |
+//! | `verify_vote_hex`      | `{"vote": hex, "election_id": str, "signature": blsag_…, "key_image": ki_…, "ring": [pk_…, …]}` | `{"valid": bool}` |
+//! | `is_valid_secret_key`  | `{"secret": sk_…}`                                                           | `{"valid": bool}`                |
 //!
 //! - **`_str`** — `vote` is a plain JSON string; its UTF-8 bytes *are*
 //!   the ballot, fed verbatim with no decoding step. Ergonomic for text
@@ -29,9 +39,9 @@
 //!   non-UTF-8 ballot.
 //! - **`_hex`** — `vote` is a hex-encoded byte string, decoded to raw
 //!   bytes before hashing. Use it for *arbitrary binary* ballots (raw
-//!   Protobuf, embedded NUL bytes, any non-UTF-8 sequence). Hex keeps
-//!   the encoding uniform with the rest of the wire (keys, signatures,
-//!   tags are all hex).
+//!   Protobuf, embedded NUL bytes, any non-UTF-8 sequence). Note this
+//!   `hex` concerns only the *ballot*; the keys, signatures and tags on
+//!   the same wire use the prefixed format.
 //!
 //! The two are just different front doors to the same byte-level
 //! operation: the library always sees `&[u8]`. So a proof produced by
@@ -43,8 +53,8 @@
 //!
 //! ### Memory hygiene caveat
 //!
-//! Going through JSON means the secret key transits as a hex string in
-//! the plugin's input buffer. Unlike [`crate::wasm`], the host cannot
+//! Going through JSON means the secret key transits as a (prefixed)
+//! string in the plugin's input buffer. Unlike [`crate::wasm`], the host cannot
 //! call `.fill(0)` on it after the call returns — it lives wherever
 //! the host SDK stored the JSON. If you care about wiping the
 //! in-memory copy of the secret on the JS side, the `wasm-bindgen`
@@ -57,11 +67,16 @@ use extism_pdk::{FnResult, Json, plugin_fn};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+// The plugin speaks the prefixed format (`pk_…_…`, `sk_…_…`, `blsag_…_…`,
+// `ki_…_…`) *exclusively*: every key / signature field is emitted in it
+// and only accepted in it. Bare hex is reserved for the pure-Rust library
+// API (`from_hex`). So all parsing below goes through `from_prefixed`.
+
 #[derive(Serialize)]
 pub struct IdentityOut {
-    /// Hex-encoded secret scalar (64 lowercase chars).
+    /// Prefixed secret scalar, e.g. `sk_<64 hex>_<8 hex checksum>`.
     pub secret: String,
-    /// Hex-encoded public key (64 lowercase chars).
+    /// Prefixed public key, e.g. `pk_<64 hex>_<8 hex checksum>`.
     pub public: String,
 }
 
@@ -69,8 +84,8 @@ pub struct IdentityOut {
 pub fn generate_identity() -> FnResult<Json<IdentityOut>> {
     let id = crate::generate_identity();
     Ok(Json(IdentityOut {
-        secret: id.secret_key.to_hex(),
-        public: id.public_key.to_hex(),
+        secret: id.secret_key.to_prefixed(),
+        public: id.public_key.to_prefixed(),
     }))
 }
 
@@ -81,7 +96,7 @@ pub struct DerivePublicIn {
 
 #[derive(Serialize)]
 pub struct DerivePublicOut {
-    /// Hex-encoded public key (64 lowercase chars).
+    /// Prefixed public key, e.g. `pk_<64 hex>_<8 hex checksum>`.
     pub public: String,
 }
 
@@ -100,9 +115,9 @@ pub struct DerivePublicOut {
 #[plugin_fn]
 pub fn derive_public_key(Json(input): Json<DerivePublicIn>) -> FnResult<Json<DerivePublicOut>> {
     let secret = Zeroizing::new(input.secret);
-    let sk = SecretKey::from_hex(&secret)?;
+    let sk = SecretKey::from_prefixed(&secret)?;
     Ok(Json(DerivePublicOut {
-        public: sk.public_key().to_hex(),
+        public: sk.public_key().to_prefixed(),
     }))
 }
 
@@ -156,15 +171,15 @@ fn sign_with_bytes(
     // buffers and the Extism PDK's input buffer in WASM linear memory
     // are not under our control. The other inputs are public.
     let secret = Zeroizing::new(secret);
-    let sk = SecretKey::from_hex(&secret)?;
+    let sk = SecretKey::from_prefixed(&secret)?;
     let ring: Vec<PublicKey> = ring
         .iter()
-        .map(|h| PublicKey::from_hex(h))
+        .map(|h| PublicKey::from_prefixed(h))
         .collect::<Result<_, _>>()?;
     let proof = crate::sign_vote(&sk, vote, election_id, &ring)?;
     Ok(Json(SignOut {
-        signature: proof.signature.to_hex(),
-        key_image: proof.key_image.to_hex(),
+        signature: proof.signature.to_prefixed(),
+        key_image: proof.key_image.to_prefixed(),
     }))
 }
 
@@ -236,7 +251,7 @@ pub fn is_valid_secret_key(Json(input): Json<IsValidSecretIn>) -> FnResult<Json<
     // memory are not under our control — see the module docs.
     let secret = Zeroizing::new(input.secret);
     Ok(Json(IsValidSecretOut {
-        valid: SecretKey::is_valid_hex(&secret),
+        valid: SecretKey::is_valid_prefixed(&secret),
     }))
 }
 
@@ -248,10 +263,10 @@ fn verify_with_bytes(vote: &[u8], input: &VerifyIn) -> Option<bool> {
     let ring: Vec<PublicKey> = input
         .ring
         .iter()
-        .map(|h| PublicKey::from_hex(h).ok())
+        .map(|h| PublicKey::from_prefixed(h).ok())
         .collect::<Option<_>>()?;
-    let signature = Signature::from_hex(&input.signature, ring.len()).ok()?;
-    let key_image = KeyImage::from_hex(&input.key_image).ok()?;
+    let signature = Signature::from_prefixed(&input.signature, ring.len()).ok()?;
+    let key_image = KeyImage::from_prefixed(&input.key_image).ok()?;
     Some(crate::verify_vote(
         vote,
         &input.election_id,

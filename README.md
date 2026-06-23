@@ -244,6 +244,70 @@ assert!(verify_vote(
 ));
 ```
 
+## Encoding formats
+
+Every value the API exchanges as text — public keys, secret keys, key
+images, signatures — has **two interchangeable string encodings**. They
+carry the exact same bytes; nothing about the cryptography changes
+between them.
+
+| Format | Example | Methods |
+|---|---|---|
+| **Bare hex** | `e2f2ae0a…2d76` | `to_hex()` / `from_hex(..)` |
+| **Prefixed** | `pk_e2f2ae0a…2d76_bfb1c73d` | `to_prefixed()` / `from_prefixed(..)` |
+
+The **prefixed** format wraps the same lowercase hex body with two
+conveniences:
+
+```text
+  pk_e2f2ae0a…e08d2d76_bfb1c73d
+  │  │                 │
+  │  │                 └ checksum: 4 bytes (8 hex chars)
+  │  └ body: identical to to_hex()
+  └ tag: pk | sk | ki | blsag
+```
+
+- a **tag** up front (`pk_`, `sk_`, `ki_`, `blsag_`) says what kind of
+  value it is, so a public key pasted where a key image was expected is
+  caught immediately instead of failing deep in verification;
+- a **checksum** at the end (a 4-byte BLAKE3 digest, hex-encoded) catches
+  the overwhelming majority of single-character typos, transpositions and
+  truncated pastes. The tag is folded into the checksum, so relabelling a
+  `pk_…` value as `ki_…` is also detected.
+
+The checksum is an **integrity / typo guard only — never a security
+primitive**. Anyone can compute a valid checksum for any bytes;
+authenticity comes solely from the BLSAG proof.
+
+| Type | Tag | `from_prefixed` signature |
+|---|---|---|
+| `PublicKey` | `pk_` | `PublicKey::from_prefixed(s)` |
+| `SecretKey` | `sk_` | `SecretKey::from_prefixed(s)` |
+| `KeyImage` | `ki_` | `KeyImage::from_prefixed(s)` |
+| `Signature` | `blsag_` | `Signature::from_prefixed(s, ring_size)` |
+
+```rust
+let id = crypto_vote::generate_identity();
+let pretty = id.public_key.to_prefixed();        // "pk_…_…"
+assert!(pretty.starts_with("pk_"));
+let back = crypto_vote::PublicKey::from_prefixed(&pretty).unwrap();
+assert_eq!(back, id.public_key);
+
+// Wrong tag is rejected even though the bytes would decode fine as hex:
+assert!(crypto_vote::KeyImage::from_prefixed(&pretty).is_err());
+```
+
+`from_prefixed` returns `Error::InvalidPrefix` (missing/wrong tag) or
+`Error::InvalidChecksum` (mistyped or corrupted value), in addition to
+the usual length / encoding errors.
+
+**The WASM, Extism and CLI front ends speak the prefixed format
+*exclusively*** — it is all they emit and all they accept; bare hex is
+rejected at those boundaries. The bare-hex `to_hex`/`from_hex` pair is
+reserved for the **pure-Rust library API**, where the caller is trusted
+to know what it is decoding. This keeps every value that crosses a
+high-level boundary self-describing and checksum-protected.
+
 ## Private key format and properties
 
 A secret key is a **uniformly random scalar in the Ristretto255 scalar
@@ -255,11 +319,13 @@ interchangeable encodings; pick the one that matches your transport:
 | Encoding | Shape | Where it's used |
 |---|---|---|
 | **Raw bytes** | `[u8; 32]` little-endian | `SecretKey::{to,from}_bytes`, `sign_vote_*_wasm` and `is_valid_secret_key_wasm` secret inputs |
-| **Hex** | 64 lowercase characters | `SecretKey::{to,from}_hex`, Extism plugin, CLI |
+| **Hex** | 64 lowercase characters | `SecretKey::{to,from}_hex` — pure-Rust library API only |
+| **Prefixed** | `sk_<64 hex>_<8 hex>` | `SecretKey::{to,from}_prefixed`, Extism plugin, CLI (see [Encoding formats](#encoding-formats)) |
 
-Both encodings carry the same value bit-for-bit. Hex is the default
-for anything that travels on the wire (consistent with keys,
-signatures, and tags elsewhere in the API). Raw bytes is the only
+All three encodings carry the same value bit-for-bit. The prefixed form
+is the **only** one the Extism and CLI front ends accept (bare hex is
+rejected there — it is reserved for the pure-Rust library API); raw
+bytes is the only
 format the wasm-bindgen flavour accepts for secret material, because a
 `Uint8Array` is mutable and the JS caller can wipe it with `.fill(0)`
 — a JS `String` (and therefore a hex string) cannot be erased from the
@@ -330,6 +396,9 @@ if !SecretKey::is_valid_bytes(&bytes) {
 assert!(SecretKey::is_valid_hex("aabbccdd…"));        // canonical, non-zero
 assert!(!SecretKey::is_valid_hex("not hex"));          // bad encoding
 assert!(!SecretKey::is_valid_hex(&"00".repeat(32)));   // zero scalar
+
+// Same check for the prefixed form (tag + checksum must also be valid):
+assert!(SecretKey::is_valid_prefixed("sk_aabbccdd…_1a2b3c4d"));
 ```
 
 These are the same checks performed implicitly at the start of every
@@ -341,23 +410,29 @@ helper (see below).
 ## Using the command line
 
 ```bash
-# Generate an identity (one per voter).
+# Generate an identity (one per voter). Output uses the prefixed format.
 $ cryptovote keygen
-secret=…
-public=…
+secret=sk_…_…
+public=pk_…_…
 
-# Sign a ballot. `ring.txt` is one hex public key per line; keep the
-# secret in a file or pass `--secret -` to read it from stdin.
-$ cryptovote sign --secret-file secret.hex --vote "option-A" \
+# Sign a ballot. `ring.txt` is one prefixed public key (`pk_…`) per
+# line. Keep the secret in a file or pass `--secret -` to read it from
+# stdin.
+$ cryptovote sign --secret-file secret.key --vote "option-A" \
     --election-id "election-2026-05" --ring ring.txt
-signature=…
-key_image=…
+signature=blsag_…_…
+key_image=ki_…_…
 
-# Verify. Exit code 0 = valid, 1 = invalid, 2 = bad input.
+# Verify. Exit code 0 = valid, 1 = invalid, 2 = bad input. The
+# --signature / --key-image values are prefixed (`blsag_…`, `ki_…`).
 $ cryptovote verify --vote "option-A" --election-id "election-2026-05" \
-    --signature <hex> --key-image <hex> --ring ring.txt
+    --signature blsag_…_… --key-image ki_…_… --ring ring.txt
 valid
 ```
+
+Every key / signature argument is the prefixed form (`pk_…`,
+`sk_…`, `ki_…`, `blsag_…`); bare hex is rejected. The CLI always prints
+the prefixed form.
 
 ## Vote payload format
 
@@ -469,7 +544,7 @@ import init, {
 // Instantiate the WASM once. A bundler resolves the .wasm asset for you;
 // no plugin needed. Then every function is ready to call.
 await init();
-const [secretBytes, publicHex] = generate_identity_wasm();
+const [secretBytes, publicKey] = generate_identity_wasm();
 ```
 
 > Why `--target web` and not `--target bundler`? The `bundler` target
@@ -515,12 +590,12 @@ await init();
 
 ```js
 // The secret comes back as a `Uint8Array` (32 raw bytes); the public
-// key as a hex string. The asymmetry is deliberate: a JS string is
-// immutable, so once a secret has been turned into one it cannot be
-// erased from the JS heap until the GC eventually collects it. A
-// `Uint8Array` is a mutable buffer the caller can wipe explicitly with
+// key as a prefixed string ("pk_…_…"). The asymmetry is deliberate: a JS
+// string is immutable, so once a secret has been turned into one it
+// cannot be erased from the JS heap until the GC eventually collects it.
+// A `Uint8Array` is a mutable buffer the caller can wipe explicitly with
 // `.fill(0)` once the secret has been used or persisted.
-const [secretBytes, publicHex] = generate_identity_wasm();
+const [secretBytes, publicKey] = generate_identity_wasm();
 
 // 1. Persist `secretBytes` wherever you want it to live across
 //    sessions. The library does not care which store you pick.
@@ -530,7 +605,7 @@ await persistVoterSecret(secretBytes);
 await fetch("/api/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ public_key: publicHex }),
+    body: JSON.stringify({ public_key: publicKey }),
 });
 
 // 3. Wipe the in-memory copy. After this point the only readable
@@ -583,11 +658,11 @@ The input is wrapped in `Zeroizing` on the Rust side; wipe the JS-side
 
 ```js
 const secretBytes = await loadVoterSecret();
-let publicHex;
+let publicKey;
 try {
-    // Returns the 64-character hex public key, or throws on malformed input
-    // (wrong length, non-canonical encoding, zero scalar).
-    publicHex = derive_public_key_wasm(secretBytes);
+    // Returns the prefixed public key ("pk_…_…"), or throws on malformed
+    // input (wrong length, non-canonical encoding, zero scalar).
+    publicKey = derive_public_key_wasm(secretBytes);
 } finally {
     secretBytes.fill(0);
 }
@@ -605,24 +680,23 @@ const ballot = JSON.stringify({ choice: "option-A" });
 // 2. Election context the host has told the page about.
 const electionId = "550e8400-e29b-41d4-a716-446655440000";
 
-// 3. The full authorised ring. The host returns it as a plain JSON
-//    array of 64-character lowercase hex strings — one per authorised
-//    voter, including the current one. The WASM module canonicalises
-//    the order internally, so the server can return them in any order
+// 3. The full authorised ring — one entry per authorised voter,
+//    including the current one. Each entry is a prefixed public key
+//    ("pk_…_…", what `generate_identity_wasm` returns); bare hex is not
+//    accepted at the WASM boundary. The module canonicalises the order
+//    internally, so the server can return them in any order
 //    (registration order, sorted, whatever):
 //
 //        GET /api/election/ring
 //        200 OK
 //        Content-Type: application/json
 //        [
-//          "84e5498b443e3617cfa8d54d9699922e2733105f287cf5bbbe90174544875b0e",
-//          "541e3d09e31ac28016ce4f652f591a4745920aff4103b4e3b272204812d4f153",
-//          "abcd...",
+//          "pk_84e5498b443e3617cfa8d54d9699922e2733105f287cf5bbbe90174544875b0e_1a2b3c4d",
+//          "pk_541e3d09e31ac28016ce4f652f591a4745920aff4103b4e3b272204812d4f153_5e6f7a8b",
 //          ...
 //        ]
 //
-//    Each entry is exactly what `PublicKey::to_hex()` produces, i.e.
-//    the 32-byte compressed Ristretto encoding rendered as hex.
+//    Each entry is exactly what `PublicKey::to_prefixed()` produces.
 const ring = await fetch("/api/election/ring").then(r => r.json());
 
 // 4. Read the secret bytes back from wherever you persisted them.
@@ -630,14 +704,14 @@ const ring = await fetch("/api/election/ring").then(r => r.json());
 //    32. Wrap the call in try/finally so the in-memory copy of the
 //    secret is wiped even on error.
 const secretBytes = await loadVoterSecret();
-let signatureHex, keyImageHex;
+let signature, keyImage;
 try {
     // `sign_vote_str_wasm` throws on bad inputs (empty vote, empty
     // election ID, secret of the wrong length, signer not in the ring,
     // …). The Rust side wraps the incoming bytes in `Zeroizing` so the
     // WASM linear-memory copy is wiped on return. (For a binary ballot,
     // call `sign_vote_bytes_wasm` with a `Uint8Array` instead.)
-    [signatureHex, keyImageHex] = sign_vote_str_wasm(
+    [signature, keyImage] = sign_vote_str_wasm(
         secretBytes,
         ballot,
         electionId,
@@ -655,8 +729,8 @@ try {
 //    plain form field; a JSON body works too) and never re-serialise.
 const form = new FormData();
 form.append("election_id", electionId);
-form.append("signature", signatureHex);
-form.append("key_image", keyImageHex);
+form.append("signature", signature);
+form.append("key_image", keyImage);
 form.append("ballot", ballot);
 
 await fetch("/api/vote", { method: "POST", body: form });
@@ -679,8 +753,8 @@ await init();
 const isValid = verify_vote_str_wasm(
     ballot,
     electionId,
-    signatureHex,
-    keyImageHex,
+    signature,
+    keyImage,
     ring,
 );
 
@@ -728,8 +802,8 @@ right default.
 
 ### Secret-hygiene trade-off vs wasm-bindgen
 
-Going through JSON means the secret key transits as a hex string in
-the plugin's input/output buffer. Three protections that the
+Going through JSON means the secret key transits as a (prefixed) string
+in the plugin's input/output buffer. Three protections that the
 wasm-bindgen flavour provides are weakened or lost:
 
 - The **Rust-side intermediate `String`** holding the parsed secret
@@ -757,15 +831,21 @@ post-hoc class, sign on a voter device with the wasm-bindgen flavour.
 Sign and verify each come in two flavours, differing only in how the
 `vote` field is carried:
 
+Every key / signature field below uses the prefixed form (`pk_…`,
+`sk_…`, `ki_…`, `blsag_…`), both in and out — bare hex is **rejected**
+at the plugin boundary (it is only accepted by the pure-Rust library
+API). Below, `<pk>` etc. denote a prefixed value; `<vote>` is unaffected.
+See [Encoding formats](#encoding-formats).
+
 | Plugin function | JSON input | JSON output |
 |---|---|---|
-| `generate_identity` | *(empty)* | `{"secret": <hex64>, "public": <hex64>}` |
-| `derive_public_key` | `{"secret": <hex64>}` | `{"public": <hex64>}` |
-| `sign_vote_str` | `{"secret": <hex64>, "vote": <str>, "election_id": <str>, "ring": [<hex64>, …]}` | `{"signature": <hex>, "key_image": <hex64>}` |
-| `sign_vote_hex` | `{"secret": <hex64>, "vote": <hex>, "election_id": <str>, "ring": [<hex64>, …]}` | `{"signature": <hex>, "key_image": <hex64>}` |
-| `verify_vote_str` | `{"vote": <str>, "election_id": <str>, "signature": <hex>, "key_image": <hex64>, "ring": [<hex64>, …]}` | `{"valid": <bool>}` |
-| `verify_vote_hex` | `{"vote": <hex>, "election_id": <str>, "signature": <hex>, "key_image": <hex64>, "ring": [<hex64>, …]}` | `{"valid": <bool>}` |
-| `is_valid_secret_key` | `{"secret": <hex64>}` | `{"valid": <bool>}` |
+| `generate_identity` | *(empty)* | `{"secret": <sk>, "public": <pk>}` |
+| `derive_public_key` | `{"secret": <sk>}` | `{"public": <pk>}` |
+| `sign_vote_str` | `{"secret": <sk>, "vote": <str>, "election_id": <str>, "ring": [<pk>, …]}` | `{"signature": <blsag>, "key_image": <ki>}` |
+| `sign_vote_hex` | `{"secret": <sk>, "vote": <hex>, "election_id": <str>, "ring": [<pk>, …]}` | `{"signature": <blsag>, "key_image": <ki>}` |
+| `verify_vote_str` | `{"vote": <str>, "election_id": <str>, "signature": <blsag>, "key_image": <ki>, "ring": [<pk>, …]}` | `{"valid": <bool>}` |
+| `verify_vote_hex` | `{"vote": <hex>, "election_id": <str>, "signature": <blsag>, "key_image": <ki>, "ring": [<pk>, …]}` | `{"valid": <bool>}` |
+| `is_valid_secret_key` | `{"secret": <sk>}` | `{"valid": <bool>}` |
 
 - **`_str`** — `vote` is a plain JSON string; its UTF-8 bytes *are* the
   ballot, fed verbatim with no decoding. Ergonomic for text ballots (a
@@ -773,8 +853,8 @@ Sign and verify each come in two flavours, differing only in how the
   UTF-8, so this flavour can't represent a non-UTF-8 ballot.
 - **`_hex`** — `vote` is hex-encoded bytes, decoded before hashing. Use
   it for *arbitrary binary* ballots (raw Protobuf, NUL bytes, any
-  non-UTF-8 sequence). Hex keeps the encoding uniform with the rest of
-  the wire (keys, signatures, tags are all hex).
+  non-UTF-8 sequence). This `hex` concerns only the *ballot*; the keys,
+  signatures and tags on the same wire use the prefixed format.
 
 The two are just front doors to the same byte-level operation — the
 library always sees `&[u8]`. So a proof made with `sign_vote_str`
@@ -787,21 +867,22 @@ hex-encoding those stored bytes and calling `verify_vote_hex`.
 
 `derive_public_key` re-derives the public key from a stored secret key —
 useful when a caller has persisted only the secret and needs to recover the
-corresponding ring entry. Input: `{"secret": <hex64>}`. Output:
-`{"public": <hex64>}`. Errors (bad hex, wrong length, zero scalar) are
-returned as plugin-level errors. The Rust-side copy of the secret is wrapped
-in `Zeroizing`; the same JSON-buffer caveat as `sign_vote_*` applies.
+corresponding ring entry. Input: `{"secret": <sk>}` (prefixed `sk_…`).
+Output: `{"public": <pk>}` (prefixed). Errors (bad prefix, bad checksum,
+bad hex, wrong length, zero scalar) are returned as plugin-level errors.
+The Rust-side copy of the secret is wrapped in `Zeroizing`; the same
+JSON-buffer caveat as `sign_vote_*` applies.
 
 ```bash
 extism call crypto_vote-extism.wasm derive_public_key \
-    --input '{"secret":"<hex64>"}' --wasi
-# → {"public":"<hex64>"}
+    --input '{"secret":"sk_…_…"}' --wasi
+# → {"public":"pk_…_…"}
 ```
 
 `is_valid_secret_key` is a pure utility that mirrors
-`SecretKey::is_valid_hex`: it returns `{"valid": false}` (never an
-error) for malformed input — bad hex, wrong length, non-canonical
-encoding, or the zero scalar. The Rust-side copy of the secret is
+`SecretKey::is_valid_prefixed`: it returns `{"valid": false}` (never an
+error) for malformed input — bad prefix/checksum, bad hex, wrong length,
+non-canonical encoding, or the zero scalar. The Rust-side copy of the secret is
 wrapped in `Zeroizing`, but the same JSON-buffer caveat as the
 [`sign_vote_*`](#secret-hygiene-trade-off-vs-wasm-bindgen) functions
 applies; for secret-handling on a voter device, prefer the wasm-bindgen
@@ -829,12 +910,12 @@ const plugin = await createPlugin(
 );
 
 // --- Operation A — generate an identity ---
-const { secret, public: publicHex } = await plugin
+const { secret, public: publicKey } = await plugin
     .call("generate_identity", "")
     .then(out => out.json());
 
-// `secret` is a 64-char hex string. Persist it however you want; this
-// flavour does not offer the `.fill(0)` zeroisation hook that the
+// `secret` is a prefixed string ("sk_…_…"). Persist it however you want;
+// this flavour does not offer the `.fill(0)` zeroisation hook that the
 // wasm-bindgen flavour does.
 await persistVoterSecret(secret);
 

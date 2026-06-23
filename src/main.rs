@@ -14,9 +14,11 @@
 //!                   --signature <hex> --key-image <hex> --ring <file>
 //! ```
 //!
-//! The ring file is a plain text file with one hex-encoded public key
-//! per line. Empty lines and lines starting with `#` are ignored, so
-//! you can keep comments alongside the authorised list.
+//! The ring file is a plain text file with one prefixed public key
+//! (`pk_…_…`) per line. Empty lines and lines starting with `#` are
+//! ignored, so you can keep comments alongside the authorised list.
+//! Like the rest of the CLI, it speaks the prefixed format exclusively;
+//! bare hex is only accepted by the pure-Rust library API.
 
 use clap::{Parser, Subcommand};
 use crypto_vote::{
@@ -25,6 +27,11 @@ use crypto_vote::{
 use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
+
+// The CLI speaks the human-friendly prefixed form (`pk_…_…`, `sk_…_…`,
+// `blsag_…_…`, `ki_…_…`) exclusively, both for what it prints and what it
+// accepts. Bare hex is reserved for the pure-Rust library API, so every
+// value parsed here goes through `from_prefixed`.
 
 #[derive(Parser, Debug)]
 #[command(
@@ -39,12 +46,12 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Generate a new voter identity (secret + public key, hex-encoded).
+    /// Generate a new voter identity (prefixed secret + public key).
     Keygen,
 
     /// Sign a ballot.
     Sign {
-        /// Hex-encoded secret key. Pass `-` to read from stdin.
+        /// Secret key in prefixed form (`sk_…`). Pass `-` for stdin.
         #[arg(
             long,
             value_name = "HEX|-",
@@ -67,7 +74,7 @@ enum Command {
         /// uses (otherwise the signature will not validate).
         #[arg(long = "election-id")]
         election_id: String,
-        /// File containing one hex-encoded public key per line.
+        /// File with one prefixed public key (`pk_…`) per line.
         #[arg(long)]
         ring: PathBuf,
     },
@@ -80,13 +87,13 @@ enum Command {
         /// Election identifier — same string the signer used.
         #[arg(long = "election-id")]
         election_id: String,
-        /// Hex-encoded signature.
+        /// Signature in prefixed form (`blsag_…`).
         #[arg(long)]
         signature: String,
-        /// Hex-encoded linking tag.
+        /// Linking tag in prefixed form (`ki_…`).
         #[arg(long = "key-image")]
         key_image: String,
-        /// File containing one hex-encoded public key per line.
+        /// File with one prefixed public key (`pk_…`) per line.
         #[arg(long)]
         ring: PathBuf,
     },
@@ -111,8 +118,8 @@ fn dispatch(cmd: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let id = generate_identity();
             // Stable, machine-friendly output. Two `key=value` lines so
             // the caller can grep / cut without writing a JSON parser.
-            println!("secret={}", id.secret_key.to_hex());
-            println!("public={}", id.public_key.to_hex());
+            println!("secret={}", id.secret_key.to_prefixed());
+            println!("public={}", id.public_key.to_prefixed());
             Ok(ExitCode::SUCCESS)
         }
 
@@ -129,12 +136,12 @@ fn dispatch(cmd: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 );
             }
             let secret = read_secret(secret.as_deref(), secret_file.as_ref())?;
-            let sk = SecretKey::from_hex(secret.trim())?;
+            let sk = SecretKey::from_prefixed(secret.trim())?;
             let vote_bytes = read_vote(&vote)?;
             let ring = read_ring(&ring)?;
             let proof = sign_vote(&sk, &vote_bytes, &election_id, &ring)?;
-            println!("signature={}", proof.signature.to_hex());
-            println!("key_image={}", proof.key_image.to_hex());
+            println!("signature={}", proof.signature.to_prefixed());
+            println!("key_image={}", proof.key_image.to_prefixed());
             Ok(ExitCode::SUCCESS)
         }
 
@@ -149,8 +156,8 @@ fn dispatch(cmd: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let ring = read_ring(&ring)?;
             // Signature size depends on ring size, so we have to know
             // the ring length before we can parse the hex.
-            let signature = Signature::from_hex(signature.trim(), ring.len())?;
-            let key_image = KeyImage::from_hex(key_image.trim())?;
+            let signature = Signature::from_prefixed(signature.trim(), ring.len())?;
+            let key_image = KeyImage::from_prefixed(key_image.trim())?;
             let ok = verify_vote(&vote_bytes, &election_id, &signature, &key_image, &ring);
             if ok {
                 println!("valid");
@@ -204,7 +211,7 @@ fn read_ring(path: &PathBuf) -> Result<Vec<PublicKey>, Box<dyn std::error::Error
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        match PublicKey::from_hex(line) {
+        match PublicKey::from_prefixed(line) {
             Ok(pk) => keys.push(pk),
             // Wrap the parse error with the line number so users can
             // find the broken entry quickly.

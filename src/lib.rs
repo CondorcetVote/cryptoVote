@@ -76,6 +76,14 @@
 //! `from_hex(..)` pair. There are also raw `to_bytes` / `from_bytes`
 //! helpers for callers that want to do their own encoding.
 //!
+//! On top of the bare hex there is a **human-friendly prefixed format**
+//! (`.to_prefixed()` / `from_prefixed(..)`): the same hex body, wrapped
+//! with a self-describing tag (`pk_`, `sk_`, `ki_`, `blsag_`) and a
+//! trailing checksum, e.g. `pk_3f8a…e1c0_d4e9a1b7`. It encodes the exact
+//! same bytes — nothing about the cryptography changes — but the tag
+//! stops a value being pasted in the wrong slot and the checksum catches
+//! typos. See [`crate::encoding`] for the full description.
+//!
 //! ## End-to-end example
 //!
 //! ```
@@ -111,6 +119,7 @@
 
 mod blsag;
 
+pub mod encoding;
 pub mod error;
 pub mod identity;
 pub mod signing;

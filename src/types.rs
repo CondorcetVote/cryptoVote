@@ -17,6 +17,7 @@
 //! curve25519-dalek canonical encoding for points (compressed Ristretto)
 //! and the little-endian canonical encoding for scalars.
 
+use crate::encoding::{self, Tag};
 use crate::error::{Error, Result};
 use core::fmt;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
@@ -68,6 +69,29 @@ impl PublicKey {
     /// Decode from a 64-character hex string.
     pub fn from_hex(s: &str) -> Result<Self> {
         let bytes = hex::decode(s).map_err(|_| Error::InvalidHex)?;
+        let arr: [u8; 32] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::InvalidLength {
+                what: "PublicKey",
+                expected: 32,
+                got: bytes.len(),
+            })?;
+        Self::from_bytes(&arr)
+    }
+
+    /// Encode in the human-friendly prefixed format: `pk_<hex>_<checksum>`.
+    ///
+    /// Same bytes as [`PublicKey::to_hex`], wrapped with a `pk_` tag and a
+    /// checksum. See [`crate::encoding`].
+    pub fn to_prefixed(&self) -> String {
+        encoding::encode_prefixed(Tag::PublicKey, &self.to_bytes())
+    }
+
+    /// Decode a `pk_<hex>_<checksum>` string produced by
+    /// [`PublicKey::to_prefixed`], verifying the tag and the checksum.
+    pub fn from_prefixed(s: &str) -> Result<Self> {
+        let bytes = encoding::decode_prefixed(Tag::PublicKey, s)?;
         let arr: [u8; 32] = bytes
             .as_slice()
             .try_into()
@@ -172,6 +196,43 @@ impl SecretKey {
         };
         Self::is_valid_bytes(&arr)
     }
+
+    /// Encode in the human-friendly prefixed format: `sk_<hex>_<checksum>`.
+    ///
+    /// Same care applies as to [`SecretKey::to_hex`]: this is the full
+    /// secret and must never leave the voter's device.
+    pub fn to_prefixed(&self) -> String {
+        encoding::encode_prefixed(Tag::SecretKey, &self.to_bytes())
+    }
+
+    /// Decode an `sk_<hex>_<checksum>` string produced by
+    /// [`SecretKey::to_prefixed`], verifying the tag and the checksum.
+    pub fn from_prefixed(s: &str) -> Result<Self> {
+        let bytes = encoding::decode_prefixed(Tag::SecretKey, s)?;
+        let arr: [u8; 32] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::InvalidLength {
+                what: "SecretKey",
+                expected: 32,
+                got: bytes.len(),
+            })?;
+        Self::from_bytes(&arr)
+    }
+
+    /// Check whether a prefixed string encodes a usable secret key,
+    /// without constructing one. Counterpart of [`SecretKey::is_valid_hex`]
+    /// for the `sk_<hex>_<checksum>` format: the tag and checksum must be
+    /// valid *and* the body must be a canonical non-zero scalar.
+    pub fn is_valid_prefixed(s: &str) -> bool {
+        let Ok(bytes) = encoding::decode_prefixed(Tag::SecretKey, s) else {
+            return false;
+        };
+        let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice()) else {
+            return false;
+        };
+        Self::is_valid_bytes(&arr)
+    }
 }
 
 /// Validate-and-parse a 32-byte secret scalar.
@@ -256,6 +317,26 @@ impl KeyImage {
             })?;
         Self::from_bytes(&arr)
     }
+
+    /// Encode in the human-friendly prefixed format: `ki_<hex>_<checksum>`.
+    pub fn to_prefixed(&self) -> String {
+        encoding::encode_prefixed(Tag::KeyImage, &self.to_bytes())
+    }
+
+    /// Decode a `ki_<hex>_<checksum>` string produced by
+    /// [`KeyImage::to_prefixed`], verifying the tag and the checksum.
+    pub fn from_prefixed(s: &str) -> Result<Self> {
+        let bytes = encoding::decode_prefixed(Tag::KeyImage, s)?;
+        let arr: [u8; 32] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::InvalidLength {
+                what: "KeyImage",
+                expected: 32,
+                got: bytes.len(),
+            })?;
+        Self::from_bytes(&arr)
+    }
 }
 
 /// A ring signature produced by [`crate::sign_vote`].
@@ -328,6 +409,21 @@ impl Signature {
     /// meaning of `ring_size`.
     pub fn from_hex(s: &str, ring_size: usize) -> Result<Self> {
         let bytes = hex::decode(s).map_err(|_| Error::InvalidHex)?;
+        Self::from_bytes(&bytes, ring_size)
+    }
+
+    /// Encode in the human-friendly prefixed format:
+    /// `blsag_<hex>_<checksum>`. The body length grows with the ring, but
+    /// the format is otherwise identical to the fixed-size types.
+    pub fn to_prefixed(&self) -> String {
+        encoding::encode_prefixed(Tag::Signature, &self.to_bytes())
+    }
+
+    /// Decode a `blsag_<hex>_<checksum>` string produced by
+    /// [`Signature::to_prefixed`], verifying the tag and the checksum. See
+    /// [`Signature::from_bytes`] for the meaning of `ring_size`.
+    pub fn from_prefixed(s: &str, ring_size: usize) -> Result<Self> {
+        let bytes = encoding::decode_prefixed(Tag::Signature, s)?;
         Self::from_bytes(&bytes, ring_size)
     }
 }

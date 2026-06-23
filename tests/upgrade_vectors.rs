@@ -110,3 +110,71 @@ fn frozen_signature_rejects_when_inputs_diverge() {
         &ring
     ));
 }
+
+// Frozen vectors for the human-friendly prefixed encoding (the `pk_…_…`
+// format layered on top of the bare hex). These are a pure function of
+// the payload bytes plus the BLAKE3 checksum, so they are fully
+// deterministic and can be frozen byte-for-byte. If the checksum
+// algorithm, domain string, tag strings or separator ever change, these
+// break — which is the point: the prefixed format is a stabilised
+// serialisation.
+const KEY_IMAGE_PREFIXED: &str =
+    "ki_ec073fb1bcb88afb08adbfe202c74fe6ad2a646984bbec10c763902b73d9d753_88e0d5af";
+const PUBLIC_KEY_0_PREFIXED: &str =
+    "pk_e2f2ae0a6abc4e71a884a961c500515f58e30b6aa582dd8db6a65945e08d2d76_bfb1c73d";
+const SIGNER_SK_PREFIXED: &str =
+    "sk_0100000000000000000000000000000000000000000000000000000000000000_3f2694de";
+const SIGNATURE_PREFIXED: &str = "blsag_0fcd75bfc58d8fae5b63c6a62e18b67eb2964e6aa772d80651a967754e4d2e0e7fe0980bc1324dbcabe5f8c1a54ea01e9c972d0e3ef9cfff9f3a036d2c6ee00728251718bf7cc2f90574c1a63f6b54ec5079d376385c8d4c8f6071856b547b07db845bf3f5f5bf4010e4231bcee66145f8f38e07c8e5b477c28b0d6d820f4706_f055887d";
+
+#[test]
+fn frozen_prefixed_encodings_are_stable() {
+    // Encoding side: known bytes must still serialise to the exact frozen
+    // strings.
+    assert_eq!(
+        KeyImage::from_hex(KEY_IMAGE_HEX).unwrap().to_prefixed(),
+        KEY_IMAGE_PREFIXED
+    );
+    assert_eq!(
+        PublicKey::from_hex(RING_HEX[0]).unwrap().to_prefixed(),
+        PUBLIC_KEY_0_PREFIXED
+    );
+    assert_eq!(
+        SecretKey::from_hex(SIGNER_SK_HEX).unwrap().to_prefixed(),
+        SIGNER_SK_PREFIXED
+    );
+    assert_eq!(
+        Signature::from_hex(SIGNATURE_HEX, 3).unwrap().to_prefixed(),
+        SIGNATURE_PREFIXED
+    );
+}
+
+#[test]
+fn frozen_prefixed_encodings_decode_back() {
+    // Decoding side: the frozen strings must decode to exactly the same
+    // bytes as the bare-hex vectors. This guards the round-trip and the
+    // checksum-verification path together.
+    assert_eq!(
+        KeyImage::from_prefixed(KEY_IMAGE_PREFIXED)
+            .unwrap()
+            .to_hex(),
+        KEY_IMAGE_HEX
+    );
+    assert_eq!(
+        PublicKey::from_prefixed(PUBLIC_KEY_0_PREFIXED)
+            .unwrap()
+            .to_hex(),
+        RING_HEX[0]
+    );
+    assert_eq!(
+        SecretKey::from_prefixed(SIGNER_SK_PREFIXED)
+            .unwrap()
+            .to_hex(),
+        SIGNER_SK_HEX
+    );
+    assert_eq!(
+        Signature::from_prefixed(SIGNATURE_PREFIXED, 3)
+            .unwrap()
+            .to_hex(),
+        SIGNATURE_HEX
+    );
+}

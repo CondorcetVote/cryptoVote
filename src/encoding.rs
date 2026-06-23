@@ -65,6 +65,10 @@ pub enum Tag {
     KeyImage,
     /// A [`crate::Signature`] — prefix `blsag`.
     Signature,
+    /// An [`crate::OwnershipProof`] — prefix `own`.
+    Ownership,
+    /// A [`crate::Nonce`] — prefix `nonce`.
+    Nonce,
 }
 
 impl Tag {
@@ -75,6 +79,8 @@ impl Tag {
             Tag::SecretKey => "sk",
             Tag::KeyImage => "ki",
             Tag::Signature => "blsag",
+            Tag::Ownership => "own",
+            Tag::Nonce => "nonce",
         }
     }
 }
@@ -166,6 +172,8 @@ mod tests {
             Tag::SecretKey,
             Tag::KeyImage,
             Tag::Signature,
+            Tag::Ownership,
+            Tag::Nonce,
         ] {
             let s = encode_prefixed(tag, &payload);
             assert!(s.starts_with(tag.as_str()));

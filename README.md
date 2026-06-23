@@ -21,7 +21,7 @@
 
 A pure-Rust cryptographic oracle for **verifiable, anonymous, double-vote-resistant** ballots.
 
-The crate is a minimal building block that offers exactly three
+The crate is a minimal building block that offers a small set of
 operations and refuses to take part in anything else.
 
 | # | Operation | Where it runs | Function |
@@ -29,6 +29,12 @@ operations and refuses to take part in anything else.
 | A | Generate identity | Either side | `generate_identity()` |
 | B | Sign a ballot | Voter's device (WebAssembly in the browser) | `sign_vote(secret, vote, election_id, ring)` |
 | C | Validate a proof | Host / server | `verify_vote(vote, election_id, signature, key_image, ring)` |
+| D | Prove ownership of a key image | Voter's device (prove) / anyone (verify) | `prove_ownership(secret, election_id, context)` / `verify_ownership(public, key_image, election_id, context, proof)` |
+
+Operations A–C are the core anonymous-voting flow. **Operation D is
+optional and opt-in** — it is the deliberate *inverse* of the ring
+signature's anonymity. See [Proving ownership of a
+vote](#proving-ownership-of-a-vote-operation-d).
 
 ## Cryptographic choices
 
@@ -135,6 +141,137 @@ For the same reason, the host should persist the ring it used to
 verify each ballot (or at least the election's frozen ring) alongside
 the ballot itself, so audits later on can rerun `verify_vote`
 deterministically.
+
+## Proving ownership of a vote (Operation D)
+
+The ring signature deliberately hides *which* authorised voter cast a
+ballot. Operation D is the **opt-in inverse**: it lets the holder of a
+secret key prove to a third party that a given key image — and therefore
+the ballot next to it in the public registry — is theirs, **without
+revealing the secret key**.
+
+The intended use case is **mandated / proxy voting**: a voter (or a
+mandate-holder voting on someone's behalf) must be able to demonstrate,
+after the fact, how a ballot was cast.
+
+```rust
+use crypto_vote::{
+    generate_identity, sign_vote, generate_nonce, prove_ownership, verify_ownership,
+};
+
+let voter   = generate_identity();
+let other   = generate_identity();
+let ring    = vec![voter.public_key, other.public_key];
+let election_id = "550e8400-e29b-41d4-a716-446655440000";
+
+// The voter casts a ballot as usual.
+let vote = sign_vote(&voter.secret_key, b"option-A", election_id, &ring).unwrap();
+
+// Later, a verifier (possibly external to the election) generates a fresh
+// nonce and sends it to the voter, who proves the registry's key image is
+// theirs. `context` is opaque bytes — here, the nonce's raw bytes.
+let nonce = generate_nonce();
+let proof = prove_ownership(&voter.secret_key, election_id, nonce.as_bytes());
+
+// The verifier checks it with public data only — the voter's public key,
+// the key image from the registry, the election id and the same nonce.
+assert!(verify_ownership(
+    &voter.public_key,
+    &vote.key_image,
+    election_id,
+    nonce.as_bytes(),
+    &proof,
+));
+```
+
+### What it is
+
+A non-interactive **Chaum–Pedersen proof of equality of discrete
+logarithms**. The key image is `I = x·B`, where `B = H_p(election_id || P)`
+is the same election-scoped base the key image was built from and
+`P = x·G` is the voter's public key. The proof demonstrates knowledge of
+a single scalar `x` satisfying **both** `P = x·G` and `I = x·B` — which
+only the true owner of `I` knows — while revealing nothing else about `x`.
+On the wire it is 64 bytes (`own_<128 hex>_<8 hex checksum>` in the
+prefixed format), independent of the ring size.
+
+### The verifier can be anyone, with their own nonce
+
+Verification needs **only public data**: the voter's public key, the key
+image, the `election_id` and the proof. No cooperation from the
+organisers and no secret are required, so a party completely external to
+the election can check a proof on its own.
+
+Everything the verifier wants the proof bound to goes into `context`. The
+recommended pattern is a **verifier-chosen nonce**:
+
+1. the verifier picks a fresh random nonce and sends it to the prover;
+2. the prover calls `prove_ownership` with `context = nonce` (the service
+   may also append the ballot bytes);
+3. the verifier checks with the same `context`.
+
+The nonce is folded into the proof's challenge, so the prover could not
+have precomputed it — the proof is **fresh** and cannot be replayed.
+
+`generate_nonce()` is provided as a verifier-side convenience: it returns
+a `Nonce` (32 fresh bytes) from the same platform CSPRNG (`SysRng`; Web
+Crypto in the browser). The organisation requesting the proof calls it,
+sends the nonce to the prover, and both pass its bytes as `context`. Using
+it is optional — any unpredictable, single-use value works.
+
+Like every other public value, a `Nonce` has the full encoding surface,
+including the self-describing, checksum-protected prefixed form
+(`nonce_<hex>_<checksum>`). On the high-level bindings the nonce travels
+**exclusively** in that form (validated on the way in), exactly like keys,
+signatures and the proof itself — the prefix is transport only, the proof
+binds the nonce's raw bytes. The pure-Rust API stays fully general: it
+takes opaque `context: &[u8]`, so a richer context (e.g. the nonce with
+the ballot bytes appended) is always available there.
+
+### Properties and limits
+
+- **No secret key is revealed.** The proof is zero-knowledge for `x`.
+- **Sound.** A third party cannot prove ownership of a key image that is
+  not theirs (they would have to know the matching secret scalar).
+- **De-anonymising by design.** Producing a proof intentionally ties
+  `P ↔ I`; it is the opt-in opposite of the ring signature's anonymity.
+- **Transferable, *not* designated-verifier.** A Chaum–Pedersen proof is
+  publicly checkable, so the nonce gives *freshness* but **not**
+  non-transferability: whoever holds `(context, proof)` can convince
+  anyone else too. For ordinary mandate scenarios this is fine. If you
+  need a proof that convinces *only* the designated verifier, you need a
+  different (designated-verifier) construction — this crate does not
+  provide one.
+- **It does not consult any registry.** `verify_ownership` answers exactly
+  "does the holder of this public key vouch for this key image, under this
+  election and context?" Tying the key image to a specific ballot is the
+  registry's job (the vote signature binds ballot + key image, and the
+  host de-duplicates on the key image); the caller does that lookup.
+- **Coercion note.** This makes the "prove how I voted" capability
+  concrete and transferable. It is the right tool for mandated voting, but
+  by the same token it means a coercer who can compel a proof (or the
+  secret key) can learn how someone voted. This is an inherent property of
+  *verifiable* receipts, not a flaw in the proof.
+
+### From JavaScript / Extism
+
+Every value crossing these boundaries — including the nonce and the proof
+— uses the prefixed, checksum-protected form (`nonce_…`, `own_…`, `pk_…`,
+`ki_…`), validated on input.
+
+- **wasm-bindgen:** `generate_nonce_wasm()` returns a fresh prefixed nonce
+  string (`nonce_…`); `prove_ownership_wasm(secret, electionId, nonce)`
+  returns the prefixed `own_…` proof; `verify_ownership_wasm(publicKey,
+  keyImage, electionId, nonce, proof)` returns a `bool`.
+- **Extism:** `generate_nonce` takes no input and returns
+  `{"nonce": nonce_…}`; `prove_ownership` takes
+  `{"secret": sk_…, "election_id": str, "nonce": nonce_…}` and returns
+  `{"proof": own_…}`; `verify_ownership` takes
+  `{"public": pk_…, "key_image": ki_…, "election_id": str, "nonce": nonce_…, "proof": own_…}`
+  and returns `{"valid": bool}`.
+
+For a custom or binary context (e.g. nonce + ballot bytes), use the
+pure-Rust API, which takes opaque `context: &[u8]`.
 
 ## Build matrix
 

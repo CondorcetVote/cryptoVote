@@ -31,6 +31,16 @@
 //! | `verify_vote_str`      | `{"vote": str, "election_id": str, "signature": blsag_…, "key_image": ki_…, "ring": [pk_…, …]}` | `{"valid": bool}` |
 //! | `verify_vote_hex`      | `{"vote": hex, "election_id": str, "signature": blsag_…, "key_image": ki_…, "ring": [pk_…, …]}` | `{"valid": bool}` |
 //! | `is_valid_secret_key`  | `{"secret": sk_…}`                                                           | `{"valid": bool}`                |
+//! | `generate_nonce`       | *(empty)*                                                                   | `{"nonce": nonce_…}`             |
+//! | `prove_ownership`      | `{"secret": sk_…, "election_id": str, "nonce": nonce_…}`                     | `{"proof": own_…}`               |
+//! | `verify_ownership`     | `{"public": pk_…, "key_image": ki_…, "election_id": str, "nonce": nonce_…, "proof": own_…}` | `{"valid": bool}` |
+//!
+//! `generate_nonce` / `prove_ownership` / `verify_ownership` expose
+//! Operation D — proof of ownership of a key image (see
+//! [`crate::ownership`]). The `nonce` is a prefixed `nonce_…_…` value
+//! (validated like every other key/signature field); the prefix is
+//! transport only, the proof binds the nonce's raw bytes. For a custom
+//! binary context, use the pure-Rust API, which takes `context: &[u8]`.
 //!
 //! - **`_str`** — `vote` is a plain JSON string; its UTF-8 bytes *are*
 //!   the ballot, fed verbatim with no decoding step. Ergonomic for text
@@ -62,7 +72,7 @@
 //! secret as a mutable `Uint8Array`. The Extism flavour optimises for
 //! *portability across host languages* instead.
 
-use crate::types::{KeyImage, PublicKey, SecretKey, Signature};
+use crate::types::{KeyImage, Nonce, OwnershipProof, PublicKey, SecretKey, Signature};
 use extism_pdk::{FnResult, Json, plugin_fn};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -253,6 +263,96 @@ pub fn is_valid_secret_key(Json(input): Json<IsValidSecretIn>) -> FnResult<Json<
     Ok(Json(IsValidSecretOut {
         valid: SecretKey::is_valid_prefixed(&secret),
     }))
+}
+
+#[derive(Serialize)]
+pub struct GenerateNonceOut {
+    /// Prefixed verifier nonce, e.g. `nonce_<64 hex>_<8 hex checksum>`.
+    /// Pass it verbatim as the `nonce` field of `prove_ownership` /
+    /// `verify_ownership`.
+    pub nonce: String,
+}
+
+/// Verifier-side convenience for Operation D: generate a fresh nonce. See
+/// [`crate::generate_nonce`]. The organisation requesting a proof calls
+/// this, sends `nonce` to the prover, and both pass it as `nonce`.
+#[plugin_fn]
+pub fn generate_nonce() -> FnResult<Json<GenerateNonceOut>> {
+    Ok(Json(GenerateNonceOut {
+        nonce: crate::generate_nonce().to_prefixed(),
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct ProveOwnershipIn {
+    pub secret: String,
+    pub election_id: String,
+    /// The verifier's challenge, a prefixed `nonce_…_…` value (e.g. from
+    /// `generate_nonce`). Its tag and checksum are validated; the proof
+    /// binds the nonce's raw bytes.
+    pub nonce: String,
+}
+
+#[derive(Serialize)]
+pub struct ProveOwnershipOut {
+    /// Prefixed ownership proof, e.g. `own_<128 hex>_<8 hex checksum>`.
+    pub proof: String,
+}
+
+/// Operation D (prover side): prove ownership of a key image. See
+/// [`crate::prove_ownership`]. The secret is wrapped in `Zeroizing` so its
+/// Rust-side heap copy is overwritten before this returns; the JSON
+/// parser's and Extism PDK's buffers are not under our control (see the
+/// module docs).
+#[plugin_fn]
+pub fn prove_ownership(Json(input): Json<ProveOwnershipIn>) -> FnResult<Json<ProveOwnershipOut>> {
+    let secret = Zeroizing::new(input.secret);
+    let sk = SecretKey::from_prefixed(&secret)?;
+    let nonce = Nonce::from_prefixed(&input.nonce)?;
+    let proof = crate::prove_ownership(&sk, &input.election_id, nonce.as_bytes());
+    Ok(Json(ProveOwnershipOut {
+        proof: proof.to_prefixed(),
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct VerifyOwnershipIn {
+    pub public: String,
+    pub key_image: String,
+    pub election_id: String,
+    pub nonce: String,
+    pub proof: String,
+}
+
+#[derive(Serialize)]
+pub struct VerifyOwnershipOut {
+    pub valid: bool,
+}
+
+/// Operation D (verifier side): check an ownership proof using only public
+/// inputs. See [`crate::verify_ownership`]. Any parse failure is reported
+/// as `{"valid": false}` rather than an error, matching the verify-vote
+/// contract.
+#[plugin_fn]
+pub fn verify_ownership(Json(input): Json<VerifyOwnershipIn>) -> FnResult<Json<VerifyOwnershipOut>> {
+    let valid = verify_ownership_inner(&input).unwrap_or(false);
+    Ok(Json(VerifyOwnershipOut { valid }))
+}
+
+/// Parse the components and run the ownership check. Returns `None` on any
+/// parse failure, which the caller maps to `false`.
+fn verify_ownership_inner(input: &VerifyOwnershipIn) -> Option<bool> {
+    let public = PublicKey::from_prefixed(&input.public).ok()?;
+    let key_image = KeyImage::from_prefixed(&input.key_image).ok()?;
+    let nonce = Nonce::from_prefixed(&input.nonce).ok()?;
+    let proof = OwnershipProof::from_prefixed(&input.proof).ok()?;
+    Some(crate::verify_ownership(
+        &public,
+        &key_image,
+        &input.election_id,
+        nonce.as_bytes(),
+        &proof,
+    ))
 }
 
 /// Shared verify core for both `verify_vote_*` entry points: the vote

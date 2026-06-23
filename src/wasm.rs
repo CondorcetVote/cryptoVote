@@ -30,7 +30,7 @@
 //! across the WASM boundary on bad input.
 
 use crate::error::Error;
-use crate::types::{KeyImage, PublicKey, SecretKey, Signature};
+use crate::types::{KeyImage, Nonce, OwnershipProof, PublicKey, SecretKey, Signature};
 use wasm_bindgen::prelude::*;
 use zeroize::Zeroizing;
 
@@ -277,6 +277,86 @@ pub fn secret_key_to_prefixed_wasm(secret_bytes: Vec<u8>) -> Result<String, JsVa
 #[wasm_bindgen]
 pub fn is_valid_prefixed_secret_key_wasm(prefixed: &str) -> bool {
     SecretKey::is_valid_prefixed(prefixed)
+}
+
+/// Generate a fresh verifier nonce in the prefixed form (`nonce_…_…`),
+/// ready to pass as `nonce` to [`prove_ownership_wasm`] /
+/// [`verify_ownership_wasm`].
+///
+/// Browser-facing version of [`crate::generate_nonce`]: 32 random bytes
+/// from Web Crypto, wrapped in the same self-describing, checksum-protected
+/// format as every other value crossing this boundary. The organisation
+/// requesting a proof calls this, sends the string to the prover, and both
+/// sides pass it verbatim. The prefix is transport only — the bytes hashed
+/// into the proof are the nonce's raw bytes, so any flavour fed the same
+/// `nonce_…` string agrees.
+#[wasm_bindgen]
+pub fn generate_nonce_wasm() -> String {
+    crate::generate_nonce().to_prefixed()
+}
+
+/// Browser-facing version of [`crate::prove_ownership`].
+///
+/// Proves that the key image derived from `secret_bytes` for
+/// `election_id` is the caller's, bound to `nonce` — the fresh challenge
+/// the verifier handed over. The secret key never leaves the device: the
+/// returned proof reveals nothing about it.
+///
+/// `secret_bytes` is the 32-byte raw secret key (a `Uint8Array`); it is
+/// wrapped in `Zeroizing` on the Rust side, and the JS caller should still
+/// `.fill(0)` its own copy afterwards. `nonce` is a prefixed `nonce_…_…`
+/// string (e.g. from `generate_nonce_wasm`); its tag and checksum are
+/// validated before use. For a custom/binary context, use the pure-Rust
+/// API, which takes opaque `context: &[u8]`.
+///
+/// Returns the proof in the prefixed form (`own_…_…`). It is public.
+#[wasm_bindgen]
+pub fn prove_ownership_wasm(
+    secret_bytes: Vec<u8>,
+    election_id: &str,
+    nonce: &str,
+) -> Result<String, JsValue> {
+    let secret = Zeroizing::new(secret_bytes);
+    let arr: &[u8; 32] = secret[..].try_into().map_err(|_| {
+        JsValue::from_str(&format!(
+            "secret must be exactly 32 bytes, got {}",
+            secret.len()
+        ))
+    })?;
+    let sk = SecretKey::from_bytes(arr).map_err(err_to_js)?;
+    let nonce = Nonce::from_prefixed(nonce).map_err(err_to_js)?;
+    let proof = crate::prove_ownership(&sk, election_id, nonce.as_bytes());
+    Ok(proof.to_prefixed())
+}
+
+/// Browser-facing version of [`crate::verify_ownership`].
+///
+/// Uses only public inputs — a verifier external to the election can run
+/// it. `public_key`, `key_image`, `nonce` and `proof` are all prefixed
+/// strings (`pk_…`, `ki_…`, `nonce_…`, `own_…`); `nonce` must be the same
+/// one the prover used. Returns a plain `bool`; any parse failure maps to
+/// `false`.
+#[wasm_bindgen]
+pub fn verify_ownership_wasm(
+    public_key: &str,
+    key_image: &str,
+    election_id: &str,
+    nonce: &str,
+    proof: &str,
+) -> bool {
+    let Ok(pk) = PublicKey::from_prefixed(public_key) else {
+        return false;
+    };
+    let Ok(ki) = KeyImage::from_prefixed(key_image) else {
+        return false;
+    };
+    let Ok(nonce) = Nonce::from_prefixed(nonce) else {
+        return false;
+    };
+    let Ok(proof) = OwnershipProof::from_prefixed(proof) else {
+        return false;
+    };
+    crate::verify_ownership(&pk, &ki, election_id, nonce.as_bytes(), &proof)
 }
 
 /// Browser-facing version of [`crate::verify_vote`] for a **text

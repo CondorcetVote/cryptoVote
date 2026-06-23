@@ -452,6 +452,167 @@ pub struct VoteProof {
     pub key_image: KeyImage,
 }
 
+/// A proof of ownership of a [`KeyImage`], produced by
+/// [`crate::prove_ownership`] and checked by [`crate::verify_ownership`].
+///
+/// It lets the holder of a secret key convince any third party that a
+/// given key image (and hence the ballot it sits next to in the public
+/// registry) is theirs — **without** revealing the secret key. The proof
+/// is a non-interactive Chaum–Pedersen proof of equality of discrete
+/// logarithms: it demonstrates knowledge of the scalar `x` such that, at
+/// once, `P = x·G` (the prover's public key) and `I = x·B` (the key
+/// image), where `B = H_p(election || P)` is the same election-scoped
+/// base the key image was built from.
+///
+/// Producing the proof intentionally **de-anonymises** the prover for
+/// that key image: `verify_ownership` is handed the public key, so it ties
+/// `P ↔ I` on purpose. That is the whole point — it is the opt-in inverse
+/// of the ring signature's anonymity, for use cases like proxy / mandated
+/// voting where a voter must demonstrate how they voted.
+///
+/// The on-the-wire encoding is two canonical 32-byte scalars,
+/// `challenge || response`, for 64 bytes total — independent of the ring
+/// size.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnershipProof {
+    pub(crate) challenge: Scalar,
+    pub(crate) response: Scalar,
+}
+
+impl OwnershipProof {
+    /// Serialise to the 64-byte `challenge || response` layout.
+    pub fn to_bytes(&self) -> [u8; 64] {
+        let mut out = [0u8; 64];
+        out[..32].copy_from_slice(&self.challenge.to_bytes());
+        out[32..].copy_from_slice(&self.response.to_bytes());
+        out
+    }
+
+    /// Deserialise 64 bytes produced by [`OwnershipProof::to_bytes`].
+    pub fn from_bytes(bytes: &[u8; 64]) -> Result<Self> {
+        let challenge = scalar_from_chunk(&bytes[..32])?;
+        let response = scalar_from_chunk(&bytes[32..])?;
+        Ok(OwnershipProof {
+            challenge,
+            response,
+        })
+    }
+
+    /// Hex-encode using lowercase digits (128 characters).
+    pub fn to_hex(&self) -> String {
+        hex::encode(self.to_bytes())
+    }
+
+    /// Decode from a 128-character hex string.
+    pub fn from_hex(s: &str) -> Result<Self> {
+        let bytes = hex::decode(s).map_err(|_| Error::InvalidHex)?;
+        let arr: [u8; 64] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::InvalidLength {
+                what: "OwnershipProof",
+                expected: 64,
+                got: bytes.len(),
+            })?;
+        Self::from_bytes(&arr)
+    }
+
+    /// Encode in the human-friendly prefixed format: `own_<hex>_<checksum>`.
+    pub fn to_prefixed(&self) -> String {
+        encoding::encode_prefixed(Tag::Ownership, &self.to_bytes())
+    }
+
+    /// Decode an `own_<hex>_<checksum>` string produced by
+    /// [`OwnershipProof::to_prefixed`], verifying the tag and the checksum.
+    pub fn from_prefixed(s: &str) -> Result<Self> {
+        let bytes = encoding::decode_prefixed(Tag::Ownership, s)?;
+        let arr: [u8; 64] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::InvalidLength {
+                what: "OwnershipProof",
+                expected: 64,
+                got: bytes.len(),
+            })?;
+        Self::from_bytes(&arr)
+    }
+}
+
+/// A verifier-chosen nonce for an ownership proof (Operation D).
+///
+/// 32 opaque bytes the verifier sends to the prover so the resulting
+/// [`OwnershipProof`] is bound to a fresh, single-use challenge and cannot
+/// be replayed. Generate one with [`crate::generate_nonce`].
+///
+/// Unlike the key types, a nonce has **no validity constraint** — any 32
+/// bytes are a valid nonce — so [`Nonce::from_bytes`] is infallible. The
+/// prefixed form (`nonce_<hex>_<checksum>`) is, exactly like the other
+/// types, a pure transport wrapper: the bytes that get hashed into a proof
+/// are the raw [`Nonce::as_bytes`], never the prefixed string. Both prover
+/// and verifier must use the same nonce.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Nonce {
+    pub(crate) bytes: [u8; 32],
+}
+
+impl Nonce {
+    /// Wrap 32 raw bytes as a nonce. Infallible — any value is valid.
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Nonce { bytes }
+    }
+
+    /// The raw 32 bytes. These are what an ownership proof binds to (pass
+    /// them as the `context` argument of [`crate::prove_ownership`] /
+    /// [`crate::verify_ownership`]).
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.bytes
+    }
+
+    /// Borrow the raw bytes, e.g. to pass straight as `context`.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Hex-encode using lowercase digits (64 characters).
+    pub fn to_hex(&self) -> String {
+        hex::encode(self.bytes)
+    }
+
+    /// Decode from a 64-character hex string.
+    pub fn from_hex(s: &str) -> Result<Self> {
+        let bytes = hex::decode(s).map_err(|_| Error::InvalidHex)?;
+        let arr: [u8; 32] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::InvalidLength {
+                what: "Nonce",
+                expected: 32,
+                got: bytes.len(),
+            })?;
+        Ok(Nonce::from_bytes(arr))
+    }
+
+    /// Encode in the human-friendly prefixed format: `nonce_<hex>_<checksum>`.
+    pub fn to_prefixed(&self) -> String {
+        encoding::encode_prefixed(Tag::Nonce, &self.bytes)
+    }
+
+    /// Decode a `nonce_<hex>_<checksum>` string produced by
+    /// [`Nonce::to_prefixed`], verifying the tag and the checksum.
+    pub fn from_prefixed(s: &str) -> Result<Self> {
+        let bytes = encoding::decode_prefixed(Tag::Nonce, s)?;
+        let arr: [u8; 32] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::InvalidLength {
+                what: "Nonce",
+                expected: 32,
+                got: bytes.len(),
+            })?;
+        Ok(Nonce::from_bytes(arr))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -23,6 +23,14 @@
 //! | A | Generate identity | Either side  | [`generate_identity`] |
 //! | B | Sign a ballot     | Voter's device (WASM in the browser) | [`sign_vote`] |
 //! | C | Validate a proof  | Host / server | [`verify_vote`] |
+//! | D | Prove ownership of a key image | Voter's device (prove) / anyone (verify) | [`prove_ownership`] / [`verify_ownership`] |
+//!
+//! Operation D is optional and opt-in: it is the inverse of the ring
+//! signature's anonymity. It lets the holder of a secret key prove to an
+//! arbitrary third party — including one external to the election — that a
+//! given key image (and the ballot beside it in the registry) is theirs,
+//! without revealing the secret key. Intended for mandated / proxy voting.
+//! See [`crate::ownership`].
 //!
 //! ## Guardrails against misuse
 //!
@@ -122,6 +130,7 @@ mod blsag;
 pub mod encoding;
 pub mod error;
 pub mod identity;
+pub mod ownership;
 pub mod signing;
 pub mod types;
 pub mod verifying;
@@ -138,6 +147,9 @@ pub mod extism;
 // canonical entry point.
 pub use crate::error::{Error, Result};
 pub use crate::identity::{Identity, generate_identity};
+pub use crate::ownership::{generate_nonce, prove_ownership, verify_ownership};
 pub use crate::signing::sign_vote;
-pub use crate::types::{KeyImage, PublicKey, SecretKey, Signature, VoteProof};
+pub use crate::types::{
+    KeyImage, Nonce, OwnershipProof, PublicKey, SecretKey, Signature, VoteProof,
+};
 pub use crate::verifying::verify_vote;

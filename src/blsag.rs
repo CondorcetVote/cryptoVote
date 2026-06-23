@@ -140,7 +140,17 @@ fn challenge_scalar(
     Scalar::from_hash(hash)
 }
 
-fn hash_public_key_to_point(election_id: &[u8], public_key: RistrettoPoint) -> RistrettoPoint {
+/// Hash-to-group base for the linkability tag, scoped by `election_id`.
+///
+/// Exposed to the crate (not the public API) so the ownership proof in
+/// [`crate::ownership`] can recompute the *same* base a key image was
+/// built from: `key_image = secret_key · hash_public_key_to_point(eid, P)`.
+/// Both the signing path and the ownership proof must agree on this base
+/// bit-for-bit, so there is a single definition here.
+pub(crate) fn hash_public_key_to_point(
+    election_id: &[u8],
+    public_key: RistrettoPoint,
+) -> RistrettoPoint {
     let mut hash = Blake2b512::new();
     hash.update(KEY_IMAGE_DOMAIN);
     hash.update((election_id.len() as u64).to_be_bytes());

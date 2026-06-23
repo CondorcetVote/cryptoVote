@@ -214,6 +214,71 @@ pub fn derive_public_key_wasm(secret_bytes: Vec<u8>) -> Result<String, JsValue> 
     Ok(sk.public_key().to_prefixed())
 }
 
+/// **Import** a secret key the user pasted in the prefixed form
+/// (`sk_<hex>_<checksum>`) and return its 32 raw bytes as a `Uint8Array`.
+///
+/// This is the bridge between the human-facing string a voter backs up
+/// or types into a form and the raw `Uint8Array` every other WASM
+/// function consumes for secret material. It validates the `sk_` tag,
+/// the checksum, and that the body is a canonical non-zero scalar; on any
+/// failure it returns a JS error string (e.g. wrong prefix, mistyped
+/// checksum, non-canonical scalar) rather than a silently-wrong key.
+///
+/// The returned `Uint8Array` **is** the secret: persist it, use it with
+/// `sign_vote_*_wasm` / `derive_public_key_wasm`, then `.fill(0)` it — the
+/// same discipline as the `secretBytes` from `generate_identity_wasm`.
+/// The Rust-side intermediate is wrapped in `Zeroizing`, so no readable
+/// copy is left in WASM memory once this returns.
+///
+/// To validate without materialising the bytes (e.g. live form
+/// feedback), use [`is_valid_prefixed_secret_key_wasm`].
+#[wasm_bindgen]
+pub fn secret_key_from_prefixed_wasm(prefixed: &str) -> Result<js_sys::Uint8Array, JsValue> {
+    let sk = SecretKey::from_prefixed(prefixed).map_err(err_to_js)?;
+    // `to_bytes` copies the scalar out; keep that copy zeroized once the
+    // Uint8Array has been built from it.
+    let bytes = Zeroizing::new(sk.to_bytes());
+    Ok(js_sys::Uint8Array::from(&bytes[..]))
+    // `bytes` and `sk` both zeroize on drop here.
+}
+
+/// **Export** a raw secret key as the prefixed string the user can back
+/// up (`sk_<hex>_<checksum>`). The inverse of
+/// [`secret_key_from_prefixed_wasm`].
+///
+/// `secret_bytes` is the 32-byte raw key (e.g. the `secretBytes` from
+/// `generate_identity_wasm`). Returns a JS error string if it is the
+/// wrong length or not a canonical non-zero scalar.
+///
+/// Hygiene note: the result is a JS `String`, which — unlike a
+/// `Uint8Array` — **cannot be wiped** with `.fill(0)`. Call this only at
+/// the moment you actually show or download the backup, and drop the
+/// reference promptly afterwards. The Rust-side input copy is still
+/// wrapped in `Zeroizing`; you remain responsible for `.fill(0)`-ing your
+/// own `Uint8Array`.
+#[wasm_bindgen]
+pub fn secret_key_to_prefixed_wasm(secret_bytes: Vec<u8>) -> Result<String, JsValue> {
+    let secret = Zeroizing::new(secret_bytes);
+    let arr: &[u8; 32] = secret[..].try_into().map_err(|_| {
+        JsValue::from_str(&format!(
+            "secret must be exactly 32 bytes, got {}",
+            secret.len()
+        ))
+    })?;
+    let sk = SecretKey::from_bytes(arr).map_err(err_to_js)?;
+    Ok(sk.to_prefixed())
+}
+
+/// Validate a prefixed secret key string (`sk_<hex>_<checksum>`) without
+/// constructing anything — handy for live form feedback before the user
+/// submits. Returns `true` iff the tag, checksum and a canonical non-zero
+/// scalar all check out. The prefixed counterpart of
+/// [`is_valid_secret_key_wasm`] (which takes raw bytes).
+#[wasm_bindgen]
+pub fn is_valid_prefixed_secret_key_wasm(prefixed: &str) -> bool {
+    SecretKey::is_valid_prefixed(prefixed)
+}
+
 /// Browser-facing version of [`crate::verify_vote`] for a **text
 /// ballot**: `vote` is a `&str`, hashed as its UTF-8 bytes. The
 /// counterpart of [`sign_vote_str_wasm`] / Extism `verify_vote_str`.

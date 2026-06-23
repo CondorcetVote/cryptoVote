@@ -539,6 +539,9 @@ import init, {
     verify_vote_str_wasm,
     verify_vote_bytes_wasm,
     is_valid_secret_key_wasm,
+    secret_key_from_prefixed_wasm,      // import sk_… string → bytes
+    secret_key_to_prefixed_wasm,        // export bytes → sk_… string
+    is_valid_prefixed_secret_key_wasm,  // validate an sk_… string
 } from "@condorcet.vote/crypto-vote";
 
 // Instantiate the WASM once. A bundler resolves the .wasm asset for you;
@@ -581,6 +584,9 @@ import init, {
     verify_vote_str_wasm,
     verify_vote_bytes_wasm,
     is_valid_secret_key_wasm,
+    secret_key_from_prefixed_wasm,
+    secret_key_to_prefixed_wasm,
+    is_valid_prefixed_secret_key_wasm,
 } from "@condorcet.vote/crypto-vote"; // or "./pkg/crypto_vote.js" when self-built
 
 await init();
@@ -667,6 +673,56 @@ try {
     secretBytes.fill(0);
 }
 ```
+
+### Importing / exporting a secret key in the prefixed format
+
+The wasm-bindgen flavour handles secret material as a `Uint8Array` so the
+JS caller can wipe it with `.fill(0)`. But a voter who wants to **back up
+or re-import** their key works with the human-friendly prefixed string
+(`sk_<hex>_<checksum>`). These two functions bridge the gap:
+
+- `secret_key_from_prefixed_wasm(str)` — **import**: validates the `sk_`
+  tag, the checksum and the canonical-scalar rule, then returns the
+  32-byte `Uint8Array` the rest of the API consumes. Throws a clear error
+  (wrong prefix, mistyped checksum, non-canonical scalar) instead of
+  yielding a silently-wrong key.
+- `secret_key_to_prefixed_wasm(bytes)` — **export**: turns a raw
+  `Uint8Array` (e.g. the `secretBytes` from `generate_identity_wasm`) into
+  the `sk_…_…` string to show or download.
+- `is_valid_prefixed_secret_key_wasm(str)` — **validate only**: `true` /
+  `false` for live form feedback, never throws.
+
+```js
+// --- Import: the voter pastes their backup string into a form ---
+const pasted = form.secretKey.value.trim(); // "sk_…_…"
+
+if (!is_valid_prefixed_secret_key_wasm(pasted)) {
+    throw new Error("That doesn't look like a valid secret key.");
+}
+
+let secretBytes;
+try {
+    secretBytes = secret_key_from_prefixed_wasm(pasted); // → Uint8Array(32)
+    // …persist it, then use it to sign…
+    const [signature, keyImage] =
+        sign_vote_str_wasm(secretBytes, "option-A", electionId, ring);
+} finally {
+    secretBytes?.fill(0);
+}
+
+// --- Export: let the voter back up a freshly generated key ---
+const [freshBytes, publicKey] = generate_identity_wasm();
+try {
+    const backup = secret_key_to_prefixed_wasm(freshBytes); // "sk_…_…"
+    showDownload(backup); // a String can't be .fill(0)'d — show it, then drop it
+} finally {
+    freshBytes.fill(0);
+}
+```
+
+A `String` cannot be wiped from JS memory the way a `Uint8Array` can, so
+only call the **export** function at the moment you actually display or
+download the backup, and let the reference go out of scope right after.
 
 ### Operation B — sign a ballot
 

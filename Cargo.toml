@@ -5,8 +5,7 @@ version = "0.4.0"
 # explicitly because CI only tests against `stable`, so a stricter MSRV
 # would be an unverified promise.
 edition = "2024"
-description = "An agnostic cryptographic oracle for verifiable voting using linkable ring signatures (BLSAG) over Ristretto255, with Blake2b-512 as the hash function."
-license = "AGPL-3.0-or-later"
+description = "Sign and verify anonymous, double-vote-resistant ballots with linkable BLSAG ring signatures over Ristretto255 + Blake2b-512. Native CLI and WebAssembly (browser + WASI) builds."
 readme = "README.md"
 repository = "https://github.com/CondorcetVote/cryptoVote"
 keywords = ["voting", "cryptography", "ring-signature", "blsag", "blake2"]

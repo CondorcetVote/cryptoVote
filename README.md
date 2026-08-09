@@ -3,24 +3,28 @@
 [![npm](https://img.shields.io/npm/v/@condorcet.vote/crypto-vote?logo=npm&label=npm)](https://www.npmjs.com/package/@condorcet.vote/crypto-vote)
 [![license](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE)
 
-> [!WARNING]
-> **Experimental, unaudited, AI-assisted code. Do not deploy in a real _(important, critical)_
-> election without an independent cryptographic review.**
+> [!IMPORTANT]
+> **Not independently audited.** The crate is usable as it stands; two
+> caveats are worth knowing before an election whose result someone has a
+> real incentive to attack.
 >
-> - **No professional security audit has been performed.** The
->   implementation, its test surface and its threat model have only
->   been reviewed by the author and AI assistants.
+> - **No third-party cryptographic review has taken place.** The
+>   implementation, its test surface and its threat model have been
+>   reviewed by the author with AI assistance. They are backed by 71 unit
+>   and integration tests, four fuzz targets, and frozen protocol vectors
+>   that pin the wire format across versions — but no outside
+>   cryptographer has examined them.
 > - **The election-scoped key-image variant is not from a published
 >   paper.** Standard BLSAG defines the linking tag as `I = x · H_p(P)`;
->   this crate uses `I_e = x · H_p(domain ‖ election_id ‖ P)` so the
->   same identity is unlinkable across separate elections. The
->   construction is a small, intuitive modification of BLSAG, but it
->   has **not** been formally analysed in the cryptographic literature
->   (as of writing). Treat it as a research prototype.
+>   this crate uses `I_e = x · H_p(domain ‖ election_id ‖ P)` so the same
+>   identity is unlinkable across separate elections. It is a small,
+>   conservative modification of BLSAG, but it has **not** been formally
+>   analysed in the cryptographic literature (as of writing).
 >
-> The crate is therefore suitable for prototyping, research,
-> educational use and internal CTF-style exercises. It is **not**
-> ready to back a critical real-world ballot.
+> In practice: fine for prototypes, research, teaching, internal and
+> associative ballots. For a high-stakes vote — contested outcome, funded
+> or motivated adversary, legal weight — treat the two points above as
+> open questions and commission a review first.
 
 A pure-Rust cryptographic oracle for **verifiable, anonymous, double-vote-resistant** ballots.
 

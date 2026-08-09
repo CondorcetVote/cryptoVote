@@ -1,5 +1,8 @@
 # crypto_vote
 
+[![npm](https://img.shields.io/npm/v/@condorcet.vote/crypto-vote?logo=npm&label=npm)](https://www.npmjs.com/package/@condorcet.vote/crypto-vote)
+[![license](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE)
+
 > [!WARNING]
 > **Experimental, unaudited, AI-assisted code. Do not deploy in a real _(important, critical)_
 > election without an independent cryptographic review.**

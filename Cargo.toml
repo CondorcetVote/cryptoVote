@@ -14,7 +14,7 @@ description = "Sign and verify anonymous, double-vote-resistant ballots with lin
 license = "AGPL-3.0-or-later"
 readme = "README.md"
 repository = "https://github.com/CondorcetVote/cryptoVote"
-keywords = ["voting", "vote", "cryptography", "ring-signature", "blsag", "blake2"]
+keywords = ["voting", "cryptography", "ring-signature", "blsag", "blake2"]
 categories = ["cryptography", "wasm"]
 
 # A `cdylib` target lets `wasm-pack` produce a browser-ready WebAssembly

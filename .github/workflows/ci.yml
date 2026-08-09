@@ -3,6 +3,32 @@
 # platform-specific code, so a single Linux runner on stable Rust is
 # enough to catch regressions. The release workflow is what fans out to
 # every target triple.
+#
+# Every `uses:` is pinned to a full-length commit SHA, with the human-
+# readable tag kept in a trailing comment. A tag — even `v7` or `stable` —
+# is a mutable pointer the action's owner can move at any time, so a tag
+# reference is a standing grant of arbitrary code execution on a runner
+# that holds this repo's checkout and, in the release workflow, an npm
+# publishing token. A SHA is immutable: what CI ran yesterday is exactly
+# what it runs today. Dependabot owns the upkeep (see
+# `.github/dependabot.yml`) — it bumps the SHA *and* rewrites the trailing
+# comment, so the pins do not silently rot. Never hand-edit a pin back to
+# a tag.
+#
+# `dtolnay/rust-toolchain` needs one extra precaution: the channel used to
+# be carried by the *ref* (`@stable` is a branch whose `action.yml`
+# defaults `toolchain: stable`). Pinning by SHA throws that away — the
+# `v1` tag marks `toolchain` as a required input — so every call site now
+# passes `toolchain: stable` explicitly. That also makes the channel
+# visible where it is used instead of hidden in the ref.
+#
+# Every checkout also sets `persist-credentials: false`. By default the
+# action writes the `GITHUB_TOKEN` into `.git/config` as an extraheader
+# and leaves it there for the rest of the job, where every later step —
+# including a `build.rs`, a proc-macro, or any transitive crate's build
+# script — can read it off the filesystem. No job in this repository
+# pushes back to the remote, so nothing needs the credential to outlive
+# the clone. The same flag is set in `release.yml`.
 
 name: CI
 
@@ -18,6 +44,18 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege for the automatic `GITHUB_TOKEN`. Declared at the
+# workflow level so it applies to every job, present and future: without
+# an explicit block the token inherits whatever the repository or
+# organisation default happens to be, which on older settings is
+# read/write on everything. CI only ever reads the code — it does not
+# push, comment, or publish — so `contents: read` is the whole need, and
+# every other scope (packages, deployments, id-token, …) is implicitly
+# dropped to `none`. A job that later needs more should ask for it
+# locally rather than widen this.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # Deny warnings everywhere so a `clippy::pedantic` slipping into the
@@ -29,13 +67,17 @@ jobs:
     name: Test (stable)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
 
       - name: Cache cargo build artefacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Run tests (default features)
         run: cargo test --all-targets --verbose
@@ -47,18 +89,21 @@ jobs:
     name: Lint (rustfmt + clippy)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain with rustfmt + clippy
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
+          toolchain: stable
           components: rustfmt, clippy
           # We will also clippy-check the WASM feature, which needs the
           # wasm32 target installed so wasm-bindgen's procedural code
           # compiles. Pulling the target in here saves a round-trip.
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: rustfmt — formatting must match
         run: cargo fmt --all -- --check
@@ -77,10 +122,14 @@ jobs:
     name: Security audit (cargo-audit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
 
       - name: Install cargo-audit
         run: cargo install --locked cargo-audit

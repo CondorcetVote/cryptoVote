@@ -1,0 +1,114 @@
+# Dependabot — automated dependency update pull requests.
+#
+# Three ecosystems are watched, one `updates` entry each:
+#
+#   1. cargo, `/`      — the crate itself (`Cargo.toml` + `Cargo.lock`).
+#   2. cargo, `/fuzz`  — the fuzzing harness. It is a *separate* cargo
+#                        package (the root manifest excludes it from the
+#                        workspace so `libfuzzer-sys` and nightly never
+#                        leak into the default build graph), so Dependabot
+#                        does not discover it from the root entry — it
+#                        needs its own directory here.
+#   3. github-actions  — the `uses:` pins in `.github/workflows/*.yml`.
+#                        Kept current so the release pipeline does not rot
+#                        on deprecated action majors (the artifact actions
+#                        in particular hard-fail once retired).
+#
+# This entry is what makes SHA pinning sustainable. Every `uses:` in the
+# workflows is pinned to a full-length commit SHA with the tag in a
+# trailing comment (`@3d3c42e5… # v7.0.1`); Dependabot understands that
+# shape, resolves the upstream tag, and rewrites *both* the SHA and the
+# comment. Without this entry the pins would freeze forever — immutable is
+# only a security win while someone is still watching for the patch that
+# fixes the next vulnerability.
+#
+# Note on pre-releases: Dependabot normally skips them, but it *will*
+# propose newer pre-releases for a dependency already pinned to one. That
+# is deliberate here — `blake2` is on `0.11.0-rc.6` because the 0.11 line
+# is what matches curve25519-dalek 5's `digest` API and no final 0.11 has
+# shipped yet; we want to hear about `rc.7` and eventually `0.11.0`.
+#
+# Every PR still has to pass the full CI job (test + fmt + clippy on both
+# the native and WASM feature sets), so a bump that breaks the build or
+# the frozen protocol vectors in `tests/upgrade_vectors.rs` cannot merge.
+
+version: 2
+
+updates:
+  # --- The crate ---
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    # Cryptographic dependencies are few and each bump deserves a look, so
+    # the limit stays low on purpose: it is a signal that review attention
+    # is expected, not a queue to rubber-stamp.
+    open-pull-requests-limit: 5
+    commit-message:
+      # Yields `chore(deps): bump …`, matching the conventional-commit
+      # style used across the repo's history.
+      prefix: chore
+      include: scope
+    groups:
+      # Patch and minor bumps of the non-cryptographic tooling are noise
+      # individually; batch them into a single PR. Anything major still
+      # arrives as its own reviewable PR.
+      minor-and-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        # The primitives excluded here define the wire format and the
+        # security of the protocol: a version change can silently alter a
+        # digest, an encoding, or an RNG source. Keeping them out of the
+        # group means each lands as an individual PR whose diff and CI run
+        # (notably `tests/upgrade_vectors.rs`) are read on their own.
+        exclude-patterns:
+          - curve25519-dalek
+          - blake2
+          - blake3
+          - rand
+          - rand_core
+          - getrandom
+          - zeroize
+        update-types: ["minor", "patch"]
+
+  # --- The fuzzing harness ---
+  - package-ecosystem: cargo
+    directory: "/fuzz"
+    schedule:
+      interval: monthly
+    # Only `libfuzzer-sys` and the path dependency on the parent crate
+    # live here; a single slot is plenty.
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # --- GitHub Actions used by CI and the release pipeline ---
+  #
+  # One action will look stuck, and that is expected: `dtolnay/rust-
+  # toolchain` publishes no per-version tags — `v1` is the only one, and
+  # the channels (`stable`, `nightly`, …) are branches, not tags. So our
+  # pin only moves when upstream re-tags `v1`. That is a deliberate
+  # trade-off: tracking a branch head would mean re-pinning to whatever
+  # was pushed last, which is exactly the mutable-reference risk the pins
+  # exist to remove. If the pin ever needs to jump ahead of `v1`, bump it
+  # by hand after reading the upstream diff.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      # Action bumps are almost always mechanical pin changes; one PR for
+      # the lot keeps the queue readable. Majors are excluded because they
+      # can change inputs or outputs (e.g. the v4 → v5 artifact rewrite)
+      # and need the workflow read alongside them.
+      actions:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

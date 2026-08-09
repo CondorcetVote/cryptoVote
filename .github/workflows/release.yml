@@ -44,6 +44,14 @@
 # `curve25519-dalek` and `rand`) do not currently advertise wasm64
 # support. We therefore ship `wasm32-wasip1` as the documented fallback,
 # matching the user's "ou wasm32 si les dépendances ne le gèrent pas".
+#
+# Action pinning: every `uses:` here is pinned to a full-length commit SHA
+# with the tag in a trailing comment, and Dependabot keeps them current.
+# See the header of `ci.yml` for the full rationale — it matters more in
+# this file than anywhere else, because the `publish-npm` job mints an
+# OIDC id-token that can publish `@condorcet.vote/crypto-vote`. A mutable
+# tag anywhere in this workflow would put that token behind code the
+# action's owner can change after review.
 
 name: Release
 
@@ -52,6 +60,19 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+
+# Default `GITHUB_TOKEN` scope for the whole workflow: read-only. The two
+# jobs that genuinely need more override it locally — `publish-npm` adds
+# `id-token: write` for OIDC, `publish` needs `contents: write` to create
+# the release — and a job-level block *replaces* this one wholesale rather
+# than adding to it, so those overrides are complete as written. Setting
+# the floor here means the six build jobs, which only compile and upload
+# artefacts, cannot touch anything even if a dependency's build script
+# goes looking for the token. Checkouts additionally pass
+# `persist-credentials: false` so it is not left in `.git/config` either;
+# see the header of `ci.yml`.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -109,11 +130,14 @@ jobs:
             os: macos-latest
             apt: ""
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain (${{ matrix.target }})
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Install cross-compile linker (apt)
@@ -124,7 +148,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.apt }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.target }}
 
@@ -150,7 +174,7 @@ jobs:
           sha256sum "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
           echo "archive=${STAGING}.tar.gz" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cryptovote-${{ matrix.target }}
           path: |
@@ -162,14 +186,17 @@ jobs:
     name: WASM — browser (wasm32-unknown-unknown via wasm-pack)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain (wasm32-unknown-unknown)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
+          toolchain: stable
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: wasm32-unknown-unknown
 
@@ -210,7 +237,7 @@ jobs:
           tar -czf crypto_vote-wasm-browser.tar.gz pkg-browser
           sha256sum crypto_vote-wasm-browser.tar.gz > crypto_vote-wasm-browser.tar.gz.sha256
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: crypto_vote-wasm-browser
           path: |
@@ -221,7 +248,7 @@ jobs:
       - name: Upload raw pkg-browser dir (for npm publish)
         # The tarball above is the GitHub Release asset; npm publish needs the
         # unpacked package directory, so upload it separately.
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: crypto_vote-pkg-browser
           path: pkg-browser/
@@ -231,14 +258,17 @@ jobs:
     name: WASM — Extism plugin (wasm32-wasip1)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain (wasm32-wasip1)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
+          toolchain: stable
           targets: wasm32-wasip1
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: wasm32-wasip1-extism
 
@@ -263,7 +293,7 @@ jobs:
           cp target/wasm32-wasip1/wasm-release/crypto_vote.wasm crypto_vote-extism.wasm
           sha256sum crypto_vote-extism.wasm > crypto_vote-extism.wasm.sha256
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: crypto_vote-extism
           path: |
@@ -288,12 +318,12 @@ jobs:
       # id-token against the trusted publisher configuration set on npmjs.com.
       id-token: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: crypto_vote-pkg-browser
           path: pkg-browser
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
@@ -335,7 +365,7 @@ jobs:
       contents: write
     steps:
       - name: Download all artefacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artefacts
 
@@ -349,7 +379,7 @@ jobs:
           ls -la release-files
 
       - name: Create / update GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           files: release-files/*
           generate_release_notes: true

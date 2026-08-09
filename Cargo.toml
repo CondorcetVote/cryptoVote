@@ -1,6 +1,6 @@
 [package]
 name = "crypto_vote"
-version = "0.1.0"
+version = "0.2.0"
 # Edition 2024 implies a floor of Rust 1.85; we do not pin `rust-version`
 # explicitly because CI only tests against `stable`, so a stricter MSRV
 # would be an unverified promise.
@@ -48,7 +48,7 @@ extism = ["dep:extism-pdk", "dep:serde"]
 # implementation needs `digest` for `RistrettoPoint::from_hash`,
 # `rand_core` for scalar / point sampling in signing and tests, and
 # `zeroize` so `SecretKey` can wipe its scalar on drop.
-curve25519-dalek = { version = "5.0.0-rc.1", features = ["digest", "rand_core", "zeroize"] }
+curve25519-dalek = { version = "5.0.0", features = ["digest", "rand_core", "zeroize"] }
 
 # Wipe secret scalars when their wrapper leaves scope.
 zeroize = "1"
@@ -124,7 +124,7 @@ serde = { version = "1", features = ["derive"], optional = true }
 # Statistically-grounded benchmarking. Used by `benches/crypto_vote.rs`
 # to measure the three core operations (identity generation, signing,
 # verification) over a 1000-member ring.
-criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 # Disable the default `libtest` bench harness so Criterion's `main!()`
 # macro can take over. Without `harness = false`, cargo wires the file

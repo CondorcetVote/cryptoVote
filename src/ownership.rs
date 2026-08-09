@@ -122,7 +122,11 @@ pub fn generate_nonce() -> Nonce {
 ///
 /// An [`OwnershipProof`] (64 bytes). It is public and freely shareable —
 /// it proves authorship, it does not grant it.
-pub fn prove_ownership(secret_key: &SecretKey, election_id: &str, context: &[u8]) -> OwnershipProof {
+pub fn prove_ownership(
+    secret_key: &SecretKey,
+    election_id: &str,
+    context: &[u8],
+) -> OwnershipProof {
     let normalized = normalise_election_id(election_id);
     let election_id = normalized.as_bytes();
 
@@ -270,13 +274,7 @@ mod tests {
         let voter = generate_identity();
         let ki = key_image_of(&voter.secret_key, EID);
         let proof = prove_ownership(&voter.secret_key, EID, NONCE);
-        assert!(verify_ownership(
-            &voter.public_key,
-            &ki,
-            EID,
-            NONCE,
-            &proof
-        ));
+        assert!(verify_ownership(&voter.public_key, &ki, EID, NONCE, &proof));
     }
 
     #[test]
@@ -366,7 +364,7 @@ mod tests {
         let voter = generate_identity();
         let ki = key_image_of(&voter.secret_key, EID);
         let mut proof = prove_ownership(&voter.secret_key, EID, NONCE);
-        proof.response = proof.response + Scalar::ONE;
+        proof.response += Scalar::ONE;
         assert!(!verify_ownership(
             &voter.public_key,
             &ki,
@@ -385,13 +383,7 @@ mod tests {
         let voter = generate_identity();
         let ki = key_image_of(&voter.secret_key, nfd);
         let proof = prove_ownership(&voter.secret_key, nfd, NONCE);
-        assert!(verify_ownership(
-            &voter.public_key,
-            &ki,
-            nfc,
-            NONCE,
-            &proof
-        ));
+        assert!(verify_ownership(&voter.public_key, &ki, nfc, NONCE, &proof));
     }
 
     #[test]

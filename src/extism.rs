@@ -334,7 +334,9 @@ pub struct VerifyOwnershipOut {
 /// as `{"valid": false}` rather than an error, matching the verify-vote
 /// contract.
 #[plugin_fn]
-pub fn verify_ownership(Json(input): Json<VerifyOwnershipIn>) -> FnResult<Json<VerifyOwnershipOut>> {
+pub fn verify_ownership(
+    Json(input): Json<VerifyOwnershipIn>,
+) -> FnResult<Json<VerifyOwnershipOut>> {
     let valid = verify_ownership_inner(&input).unwrap_or(false);
     Ok(Json(VerifyOwnershipOut { valid }))
 }

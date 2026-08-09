@@ -78,8 +78,54 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Gate every other job on the tag agreeing with the manifest.
+  #
+  # The two registries read the version from different places: npm gets it
+  # from the git tag (`npm pkg set version="${GITHUB_REF_NAME#v}"` below),
+  # while crates.io reads `[package] version` in Cargo.toml. Nothing forced
+  # them to agree — the manifest sat at 0.1.0 while v0.3.0 shipped — and
+  # the failure mode is nasty: with crates.io in the loop, a forgotten bump
+  # only surfaces at the very end, as `crate version already uploaded`,
+  # after the GitHub Release and the npm package are already public and a
+  # published version number can no longer be reused.
+  #
+  # Running as its own job rather than a step inside the builds means the
+  # mismatch is caught in seconds, before six build matrices spin up.
+  preflight:
+    name: Preflight — tag ↔ manifest version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tag must match the version in Cargo.toml
+        # Skipped on `workflow_dispatch`, which has no tag to compare
+        # against. The job itself still runs and succeeds, so the manual
+        # dry-run path keeps working — an `if:` on the *job* would mark it
+        # skipped and take every dependent build down with it.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          # tomllib rather than grep: it cannot be fooled by a commented-out
+          # or same-named `version` key elsewhere in the manifest. Python
+          # 3.11+ ships it in the stdlib and is preinstalled on the runner,
+          # so this needs no toolchain and no install step.
+          manifest=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')
+          tag="${GITHUB_REF_NAME#v}"
+          echo "tag=$tag  manifest=$manifest"
+          if [ "$tag" != "$manifest" ]; then
+            # On stdout, not stderr: GitHub only parses `::error::` workflow
+            # commands from the step's stdout stream.
+            echo "::error::Tag v$tag and Cargo.toml version $manifest disagree." \
+                 "Align [package] version with the tag, or delete and re-cut the tag" \
+                 "at the intended commit, then push again."
+            exit 1
+          fi
+
   build-native:
     name: Native — ${{ matrix.target }}
+    needs: preflight
     runs-on: ${{ matrix.os }}
     strategy:
       # Don't cancel an ARM build when an x86 row fails (or vice versa);
@@ -184,6 +230,7 @@ jobs:
 
   build-wasm-browser:
     name: WASM — browser (wasm32-unknown-unknown via wasm-pack)
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -256,6 +303,7 @@ jobs:
 
   build-wasm-extism:
     name: WASM — Extism plugin (wasm32-wasip1)
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

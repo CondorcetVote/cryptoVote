@@ -5,7 +5,7 @@
 # which is what `use crypto_vote::…` and every generated artefact
 # (`crypto_vote.wasm`, `crypto_vote.js`, `libcrypto_vote.rlib`) refer to.
 name = "crypto-vote"
-version = "0.4.0"
+version = "0.4.1"
 # Edition 2024 implies a floor of Rust 1.85; we do not pin `rust-version`
 # explicitly because CI only tests against `stable`, so a stricter MSRV
 # would be an unverified promise.
@@ -16,6 +16,19 @@ readme = "README.md"
 repository = "https://github.com/CondorcetVote/cryptoVote"
 keywords = ["voting", "cryptography", "ring-signature", "blsag", "blake2"]
 categories = ["cryptography", "wasm"]
+
+# Keep repository plumbing out of the published `.crate` archive. Cargo
+# ships every git-tracked file by default, which would put the CI
+# workflows, the Dependabot config and the agent guidelines in front of
+# anyone running `cargo vendor` or reading the crate source on docs.rs —
+# none of it is usable outside this repository.
+#
+# `src/`, `tests/`, `benches/`, `README.md` and `LICENSE` deliberately
+# stay in: `cargo package` compiles and verifies the archive, and a
+# downstream auditor should be able to run the suite from the published
+# crate alone. `fuzz/` needs no entry — it is its own package, so cargo
+# already leaves it out.
+exclude = [".github", ".gitignore", "AGENTS.md"]
 
 # A `cdylib` target lets `wasm-pack` produce a browser-ready WebAssembly
 # module, while `rlib` keeps the crate usable as a regular Rust dependency

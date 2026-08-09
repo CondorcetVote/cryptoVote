@@ -15,7 +15,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-crypto_vote = { path = ".." }
+# The package is `crypto-vote` (hyphen); cargo maps it to the extern
+# crate name `crypto_vote`, which is what the fuzz targets `use`.
+crypto-vote = { path = ".." }
 
 # Each fuzz target is its own binary. `test = false` keeps `cargo test`
 # from trying to build them with the wrong runner.

@@ -1,14 +1,20 @@
 [package]
-name = "crypto_vote"
+# Hyphenated on purpose: it matches the npm package
+# (`@condorcet.vote/crypto-vote`) and the crates.io convention. The Rust
+# side is unaffected — `[lib] name` below pins the crate to `crypto_vote`,
+# which is what `use crypto_vote::…` and every generated artefact
+# (`crypto_vote.wasm`, `crypto_vote.js`, `libcrypto_vote.rlib`) refer to.
+name = "crypto-vote"
 version = "0.4.0"
 # Edition 2024 implies a floor of Rust 1.85; we do not pin `rust-version`
 # explicitly because CI only tests against `stable`, so a stricter MSRV
 # would be an unverified promise.
 edition = "2024"
 description = "Sign and verify anonymous, double-vote-resistant ballots with linkable BLSAG ring signatures over Ristretto255 + Blake2b-512. Native CLI and WebAssembly (browser + WASI) builds."
+license = "AGPL-3.0-or-later"
 readme = "README.md"
 repository = "https://github.com/CondorcetVote/cryptoVote"
-keywords = ["voting", "cryptography", "ring-signature", "blsag", "blake2"]
+keywords = ["voting", "vote", "cryptography", "ring-signature", "blsag", "blake2"]
 categories = ["cryptography", "wasm"]
 
 # A `cdylib` target lets `wasm-pack` produce a browser-ready WebAssembly

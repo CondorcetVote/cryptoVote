@@ -1,4 +1,4 @@
-# crypto_vote
+# cryptoVote
 
 [![npm](https://img.shields.io/npm/v/@condorcet.vote/crypto-vote?logo=npm&label=npm)](https://www.npmjs.com/package/@condorcet.vote/crypto-vote)
 [![license](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE)

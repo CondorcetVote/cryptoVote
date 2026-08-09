@@ -39,6 +39,14 @@
 #                                                     a static asset). Published to npmjs.com on
 #                                                     every tag push via OIDC Trusted Publishing.
 #
+# crates.io:
+#   crypto-vote                                      — the Rust crate itself, published on every tag
+#                                                     push, also via OIDC Trusted Publishing. Note
+#                                                     the two registries take their version number
+#                                                     from different places — npm from the git tag,
+#                                                     crates.io from `[package] version` — which is
+#                                                     what the `preflight` job exists to reconcile.
+#
 # Note on item 4: `wasm64-unknown-unknown` is a Tier 3 target requiring
 # nightly Rust, and several transitive dependencies (notably
 # `curve25519-dalek` and `rand`) do not currently advertise wasm64
@@ -395,6 +403,56 @@ jobs:
         # accessible. Authentication is handled by the OIDC id-token —
         # no NODE_AUTH_TOKEN needed.
         run: cd pkg-browser && npm publish --access public
+
+  publish-crates-io:
+    name: Publish — crates.io (crypto-vote)
+    # Tag pushes only, like the other publish jobs: a manual
+    # `workflow_dispatch` builds everything but must never publish.
+    if: startsWith(github.ref, 'refs/tags/v')
+    # Gated on *every* build, not just the native one. Publishing to
+    # crates.io is the least reversible step in this pipeline — a version
+    # can be yanked but never replaced or deleted, and the number is burnt
+    # for good. If any target fails to build we would rather ship nothing
+    # than mint an immutable version whose WASM artefacts are missing.
+    needs:
+      - build-native
+      - build-wasm-browser
+      - build-wasm-extism
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for Trusted Publishing: crates.io verifies this
+      # short-lived id-token against the trusted publisher configured on
+      # the crate. Note that configuration pins the *workflow filename* —
+      # renaming or splitting `release.yml` silently breaks the exchange
+      # and surfaces as an opaque auth failure, so update it on crates.io
+      # first if this file ever moves.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - name: Exchange the OIDC id-token for a crates.io token
+        id: auth
+        # Mints a short-lived registry token and revokes it in its own
+        # post-job step, so nothing durable is stored anywhere — the same
+        # reason npm publishes via OIDC rather than a repository secret.
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+
+      - name: Publish to crates.io
+        # `--locked` publishes against the committed Cargo.lock instead of
+        # re-resolving, so the archive matches what CI tested. The version
+        # comes from `[package] version`, which the `preflight` job has
+        # already checked against the tag.
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
   publish:
     name: Publish GitHub Release

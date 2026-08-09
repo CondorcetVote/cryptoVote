@@ -5,7 +5,7 @@
 # which is what `use crypto_vote::…` and every generated artefact
 # (`crypto_vote.wasm`, `crypto_vote.js`, `libcrypto_vote.rlib`) refer to.
 name = "crypto-vote"
-version = "0.4.1"
+version = "0.4.2"
 # Edition 2024 implies a floor of Rust 1.85; we do not pin `rust-version`
 # explicitly because CI only tests against `stable`, so a stricter MSRV
 # would be an unverified promise.

@@ -1,5 +1,7 @@
 # cryptoVote
 
+[![crates.io](https://img.shields.io/crates/v/crypto-vote?logo=rust&label=crates.io)](https://crates.io/crates/crypto-vote)
+[![docs.rs](https://img.shields.io/docsrs/crypto-vote?logo=docsdotrs&label=docs.rs)](https://docs.rs/crypto-vote)
 [![npm](https://img.shields.io/npm/v/@condorcet.vote/crypto-vote?logo=npm&label=npm)](https://www.npmjs.com/package/@condorcet.vote/crypto-vote)
 [![license](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE)
 

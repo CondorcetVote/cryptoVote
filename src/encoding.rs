@@ -5,7 +5,8 @@
 //! signed or verified — it is a pure presentation layer whose only job is
 //! to make a copy-pasted value:
 //!
-//!  - **self-describing** — a short tag (`pk`, `sk`, `ki`, `blsag`) up
+//!  - **self-describing** — a short tag (`pk`, `sk`, `ki`, `blsag`, `own`,
+//!    `nonce`, `ring`) up
 //!    front says what kind of value it is, so a public key pasted where a
 //!    key image was expected is caught immediately;
 //!  - **typo-resistant** — a trailing checksum detects the overwhelming
@@ -19,7 +20,7 @@
 //!   │  │         │
 //!   │  │         └ checksum: 4 bytes, hex (8 chars)
 //!   │  └ body: the canonical hex encoding, exactly as `to_hex()` emits it
-//!   └ tag: pk | sk | ki | blsag
+//!   └ tag: pk | sk | ki | blsag | own | nonce | ring
 //! ```
 //!
 //! Three `_`-separated parts. None of the parts can itself contain a `_`
@@ -69,7 +70,21 @@ pub enum Tag {
     Ownership,
     /// A [`crate::Nonce`] — prefix `nonce`.
     Nonce,
+    /// A [`crate::RingDigest`] — prefix `ring`.
+    RingDigest,
 }
+
+/// Every tag, in one place, so `decode_prefixed` can tell a genuine
+/// mislabelled value from arbitrary input it must not echo back.
+const ALL_TAGS: [Tag; 7] = [
+    Tag::PublicKey,
+    Tag::SecretKey,
+    Tag::KeyImage,
+    Tag::Signature,
+    Tag::Ownership,
+    Tag::Nonce,
+    Tag::RingDigest,
+];
 
 impl Tag {
     /// The human-readable prefix for this tag (no trailing `_`).
@@ -81,7 +96,13 @@ impl Tag {
             Tag::Signature => "blsag",
             Tag::Ownership => "own",
             Tag::Nonce => "nonce",
+            Tag::RingDigest => "ring",
         }
+    }
+
+    /// Look a prefix string up among the known tags.
+    fn from_str(s: &str) -> Option<Tag> {
+        ALL_TAGS.into_iter().find(|t| t.as_str() == s)
     }
 }
 
@@ -142,10 +163,17 @@ pub fn decode_prefixed(expected: Tag, s: &str) -> Result<Zeroizing<Vec<u8>>> {
     };
 
     if *tag_str != expected.as_str() {
-        // Safe to echo: a real tag is short and never carries the body.
+        // Only echo the first part back when it is one of our own tags:
+        // a real tag is short and never carries the body. Anything else
+        // (e.g. `<hex secret>_x_y`) could be secret material and is
+        // reported as "no recognisable tag" instead.
+        let got = match Tag::from_str(tag_str) {
+            Some(tag) => tag.as_str().to_owned(),
+            None => String::new(),
+        };
         return Err(Error::InvalidPrefix {
             expected: expected.as_str(),
-            got: (*tag_str).to_owned(),
+            got,
         });
     }
 
@@ -167,14 +195,7 @@ mod tests {
     #[test]
     fn round_trips_every_tag() {
         let payload = [7u8; 32];
-        for tag in [
-            Tag::PublicKey,
-            Tag::SecretKey,
-            Tag::KeyImage,
-            Tag::Signature,
-            Tag::Ownership,
-            Tag::Nonce,
-        ] {
+        for tag in ALL_TAGS {
             let s = encode_prefixed(tag, &payload);
             assert!(s.starts_with(tag.as_str()));
             let back = decode_prefixed(tag, &s).unwrap();
@@ -258,6 +279,22 @@ mod tests {
             Error::InvalidPrefix { got, .. } => assert!(got.is_empty()),
             other => panic!("expected InvalidPrefix, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn rejects_unknown_tag_without_leaking_it() {
+        // A three-part string whose first part is not one of our tags
+        // could be `<secret hex>_junk_junk`; the error must not echo it.
+        let secret_like = format!("{}_x_y", "ab".repeat(32));
+        let err = decode_prefixed(Tag::SecretKey, &secret_like).unwrap_err();
+        assert_eq!(
+            err,
+            Error::InvalidPrefix {
+                expected: "sk",
+                got: String::new()
+            }
+        );
+        assert!(!err.to_string().contains("abab"));
     }
 
     #[test]

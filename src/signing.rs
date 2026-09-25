@@ -44,9 +44,15 @@
 //! reused identity does not emit the same public tag across elections.
 
 use crate::error::{Error, Result};
-use crate::types::{KeyImage, PublicKey, SecretKey, Signature, VoteProof};
+use crate::types::{KeyImage, PublicKey, RingDigest, SecretKey, Signature, VoteProof};
+use blake2::{Blake2b512, Digest};
 use curve25519_dalek::ristretto::RistrettoPoint;
+use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 use unicode_normalization::UnicodeNormalization;
+
+/// Domain-separation string for [`ring_digest`]. Part of the format's
+/// compatibility contract: changing it changes every published digest.
+const RING_DIGEST_DOMAIN: &[u8] = b"crypto_vote:ring-digest:v1";
 
 /// Operation B: produce the signed proof for a ballot.
 ///
@@ -108,11 +114,7 @@ pub fn sign_vote(
     let sorted = canonicalised_ring(ring)?;
 
     // 2. Locate the signer's index in that canonical ring.
-    let signer_pk = secret_key.public_key();
-    let secret_index = sorted
-        .iter()
-        .position(|pk| *pk == signer_pk)
-        .ok_or(Error::SignerNotInRing)?;
+    let secret_index = signer_index(&sorted, &secret_key.public_key())?;
 
     // 3. Convert the canonical public API types into curve points for
     //    the local BLSAG implementation. The ring is full: signer
@@ -123,7 +125,7 @@ pub fn sign_vote(
     //    docs for the wire format.
     let bound = bind_to_election(election_id, vote);
 
-    // 5. Produce the experimental BLSAG proof. The key image is scoped
+    // 5. Produce the BLSAG proof. The key image is scoped
     //    by `election_id`, while the challenge chain signs `bound`.
     let blsag = crate::blsag::sign(
         secret_key.scalar,
@@ -145,6 +147,64 @@ pub fn sign_vote(
             point: blsag.key_image,
         },
     })
+}
+
+/// Find the signer's slot in the canonical ring without an early exit.
+///
+/// A plain `position()` stops at the first match, so its running time
+/// reveals the index — and the index *is* the signer's identity within
+/// the anonymity set. This scan always visits every member, compares in
+/// constant time and selects the index without branching, so the time
+/// spent here is independent of where the signer sits. (The BLSAG chain
+/// itself still starts at the signer's slot, as in every BLSAG
+/// implementation; this removes the one avoidable data-dependent branch.)
+fn signer_index(sorted: &[PublicKey], signer_pk: &PublicKey) -> Result<usize> {
+    let mut index = 0u64;
+    let mut found = Choice::from(0u8);
+    for (i, pk) in sorted.iter().enumerate() {
+        let hit = pk.point.ct_eq(&signer_pk.point);
+        index.conditional_assign(&(i as u64), hit);
+        found |= hit;
+    }
+    if bool::from(found) {
+        Ok(index as usize)
+    } else {
+        Err(Error::SignerNotInRing)
+    }
+}
+
+/// Compute the canonical digest of an authorised ring.
+///
+/// The digest is a pure function of the *set* of public keys: the ring is
+/// canonicalised exactly like [`sign_vote`] and [`crate::verify_vote`] do
+/// (sorted by compressed encoding, duplicates and rings of fewer than two
+/// members rejected), so any ordering of the same members yields the same
+/// value, and any ring that would be refused for signing is refused here.
+///
+/// Its purpose is to let a voter check, out of band, that the ring their
+/// device is about to sign with is the one the election actually
+/// published — the anonymity of a ballot is exactly the ring it was signed
+/// under, so a host that hands each voter a slightly different ring can
+/// tell their ballots apart. Publish the digest of the frozen ring where
+/// voters can see it (bulletin board, election page, signed announcement),
+/// and have the voting page compare the digest of the ring it fetched
+/// against it before calling [`sign_vote`]. See the README's threat model.
+///
+/// # Errors
+///
+/// - [`Error::RingTooSmall`] if `ring` has fewer than 2 entries.
+/// - [`Error::DuplicateRingMember`] if a public key appears twice.
+pub fn ring_digest(ring: &[PublicKey]) -> Result<RingDigest> {
+    let sorted = canonicalised_ring(ring)?;
+    let mut hash = Blake2b512::new();
+    hash.update(RING_DIGEST_DOMAIN);
+    hash.update((sorted.len() as u64).to_be_bytes());
+    for pk in &sorted {
+        hash.update(pk.to_bytes());
+    }
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(&hash.finalize()[..32]);
+    Ok(RingDigest { bytes })
 }
 
 /// Build the actual byte string that gets hashed.
@@ -271,6 +331,52 @@ mod tests {
             &proof.key_image,
             &ring,
         ));
+    }
+
+    #[test]
+    fn signer_index_matches_position_for_every_slot() {
+        let ids: Vec<_> = (0..5).map(|_| generate_identity()).collect();
+        let ring: Vec<PublicKey> = ids.iter().map(|id| id.public_key).collect();
+        let sorted = canonicalised_ring(&ring).unwrap();
+        for id in &ids {
+            let expected = sorted.iter().position(|pk| *pk == id.public_key).unwrap();
+            assert_eq!(signer_index(&sorted, &id.public_key).unwrap(), expected);
+        }
+        let stranger = generate_identity().public_key;
+        assert_eq!(
+            signer_index(&sorted, &stranger).unwrap_err(),
+            Error::SignerNotInRing
+        );
+    }
+
+    #[test]
+    fn ring_digest_is_order_independent() {
+        let ring: Vec<PublicKey> = (0..4).map(|_| generate_identity().public_key).collect();
+        let mut reversed = ring.clone();
+        reversed.reverse();
+        assert_eq!(ring_digest(&ring).unwrap(), ring_digest(&reversed).unwrap());
+    }
+
+    #[test]
+    fn ring_digest_changes_with_membership() {
+        let ring: Vec<PublicKey> = (0..4).map(|_| generate_identity().public_key).collect();
+        let mut swapped = ring.clone();
+        swapped[1] = generate_identity().public_key;
+        assert_ne!(ring_digest(&ring).unwrap(), ring_digest(&swapped).unwrap());
+        let mut extended = ring.clone();
+        extended.push(generate_identity().public_key);
+        assert_ne!(ring_digest(&ring).unwrap(), ring_digest(&extended).unwrap());
+    }
+
+    #[test]
+    fn ring_digest_rejects_what_signing_rejects() {
+        let a = generate_identity().public_key;
+        let b = generate_identity().public_key;
+        assert_eq!(ring_digest(&[a]).unwrap_err(), Error::RingTooSmall);
+        assert_eq!(
+            ring_digest(&[a, b, a]).unwrap_err(),
+            Error::DuplicateRingMember
+        );
     }
 
     #[test]

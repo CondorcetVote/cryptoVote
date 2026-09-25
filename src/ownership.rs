@@ -64,7 +64,7 @@
 //! de-duplicates on `I`); the caller is expected to do that lookup
 //! separately.
 
-use crate::blsag::hash_public_key_to_point;
+use crate::blsag::{hash_public_key_to_point, hedged_scalar};
 use crate::signing::normalise_election_id;
 use crate::types::{KeyImage, Nonce, OwnershipProof, PublicKey, SecretKey};
 use blake2::{Blake2b512, Digest};
@@ -73,7 +73,8 @@ use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::MultiscalarMul;
 use rand::rngs::SysRng;
-use rand_core::UnwrapErr;
+use rand_core::{Rng, UnwrapErr};
+use zeroize::Zeroizing;
 
 /// Domain-separation tag for the ownership-proof Fiat–Shamir challenge.
 /// Distinct from the BLSAG challenge domain so a transcript from one
@@ -96,11 +97,13 @@ const OWNERSHIP_DOMAIN: &[u8] = b"crypto_vote:ownership:challenge";
 /// the bytes beyond "opaque, fresh context". The prover must receive and
 /// reuse the same nonce.
 pub fn generate_nonce() -> Nonce {
-    // A uniformly random scalar's canonical encoding gives 32 fresh bytes
-    // from the same CSPRNG path the rest of the crate uses for signing.
-    // (~252 bits of entropy — far more than a nonce needs.)
+    // 32 uniformly random bytes straight from the CSPRNG — the full 256
+    // bits, not a scalar's canonical encoding (which would pin the top
+    // nibble to zero).
     let mut rng = UnwrapErr(SysRng);
-    Nonce::from_bytes(Scalar::random(&mut rng).to_bytes())
+    let mut bytes = [0u8; 32];
+    rng.fill_bytes(&mut bytes);
+    Nonce::from_bytes(bytes)
 }
 
 /// Operation D (prover side): prove that the key image derived from
@@ -135,9 +138,19 @@ pub fn prove_ownership(
     let base = hash_public_key_to_point(election_id, public_key);
     let key_image = secret_key.scalar * base;
 
-    // Commit to a fresh nonce on both bases: R1 = r·G, R2 = r·B.
+    // Commit to a fresh nonce on both bases: R1 = r·G, R2 = r·B. `r` is
+    // hedged exactly like the BLSAG signer's `alpha`: hashed from the
+    // secret key, the statement and 64 fresh random bytes, so a faulty
+    // RNG cannot repeat it (which would leak `x`). See [`crate::blsag`].
     let mut rng = UnwrapErr(SysRng);
-    let r = Scalar::random(&mut rng);
+    let mut entropy = Zeroizing::new([0u8; 64]);
+    rng.fill_bytes(&mut entropy[..]);
+    let r = hedged_scalar(
+        &secret_key.scalar,
+        &hedge_message(election_id, context),
+        &entropy,
+        0,
+    );
     let commitment_g = r * RISTRETTO_BASEPOINT_POINT;
     let commitment_b = r * base;
 
@@ -216,6 +229,21 @@ pub fn verify_ownership(
     );
 
     expected == proof.challenge
+}
+
+/// The bytes the hedged commitment nonce is bound to: the ownership
+/// domain plus the length-prefixed `(election_id, context)` statement.
+/// The leading domain string keeps this input space disjoint from the
+/// BLSAG signer's, which hedges over the election-bound ballot instead.
+fn hedge_message(election_id: &[u8], context: &[u8]) -> Vec<u8> {
+    let mut out =
+        Vec::with_capacity(OWNERSHIP_DOMAIN.len() + 16 + election_id.len() + context.len());
+    out.extend_from_slice(OWNERSHIP_DOMAIN);
+    out.extend_from_slice(&(election_id.len() as u64).to_be_bytes());
+    out.extend_from_slice(election_id);
+    out.extend_from_slice(&(context.len() as u64).to_be_bytes());
+    out.extend_from_slice(context);
+    out
 }
 
 /// The Fiat–Shamir challenge for the ownership proof.
@@ -384,6 +412,16 @@ mod tests {
         let ki = key_image_of(&voter.secret_key, nfd);
         let proof = prove_ownership(&voter.secret_key, nfd, NONCE);
         assert!(verify_ownership(&voter.public_key, &ki, nfc, NONCE, &proof));
+    }
+
+    #[test]
+    fn two_proofs_of_the_same_statement_differ() {
+        // Hedging keeps the proof randomised: same key, election and
+        // context must still give two different transcripts.
+        let voter = generate_identity();
+        let p1 = prove_ownership(&voter.secret_key, EID, NONCE);
+        let p2 = prove_ownership(&voter.secret_key, EID, NONCE);
+        assert_ne!(p1, p2);
     }
 
     #[test]

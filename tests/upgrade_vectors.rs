@@ -21,7 +21,9 @@
 //! regenerating them, document the protocol change too — silent
 //! regeneration is exactly the bug this file is meant to catch.
 
-use crypto_vote::{KeyImage, PublicKey, SecretKey, Signature, sign_vote, verify_vote};
+use crypto_vote::{
+    KeyImage, PublicKey, RingDigest, SecretKey, Signature, ring_digest, sign_vote, verify_vote,
+};
 
 const SIGNER_SK_HEX: &str = "0100000000000000000000000000000000000000000000000000000000000000";
 const RING_HEX: [&str; 3] = [
@@ -67,6 +69,35 @@ fn key_image_is_deterministic_for_a_fixed_secret_key() {
     // privacy property that prevents public cross-election correlation.
     let proof3 = sign_vote(&sk, VOTE, "upgrade-vector-other-election", &ring).unwrap();
     assert_ne!(proof3.key_image.to_hex(), KEY_IMAGE_HEX);
+}
+
+// The ring digest is a pure function of the frozen ring (domain string,
+// length prefix, canonical ordering, Blake2b-512 truncation), so it can be
+// frozen byte-for-byte. Hosts publish this value; a change here would
+// silently invalidate every published digest.
+const RING_DIGEST_HEX: &str = "73962db84576d6566db7f176bda4ffe5bd1bb34938c65d666f3a02af34ce451e";
+const RING_DIGEST_PREFIXED: &str =
+    "ring_73962db84576d6566db7f176bda4ffe5bd1bb34938c65d666f3a02af34ce451e_bd3993f8";
+
+#[test]
+fn ring_digest_is_frozen() {
+    let ring = frozen_ring();
+    let digest = ring_digest(&ring).unwrap();
+    assert_eq!(
+        digest.to_hex(),
+        RING_DIGEST_HEX,
+        "ring digest drifted — domain, ordering, length prefix or hash changed"
+    );
+    assert_eq!(digest.to_prefixed(), RING_DIGEST_PREFIXED);
+    assert_eq!(
+        RingDigest::from_prefixed(RING_DIGEST_PREFIXED).unwrap(),
+        digest
+    );
+
+    // Order independence is part of the frozen contract.
+    let mut reversed = ring.clone();
+    reversed.reverse();
+    assert_eq!(ring_digest(&reversed).unwrap().to_hex(), RING_DIGEST_HEX);
 }
 
 #[test]

@@ -29,6 +29,7 @@
 //! as plain JS `Error` strings rather than panics. We never panic
 //! across the WASM boundary on bad input.
 
+use crate::RingDigest;
 use crate::error::Error;
 use crate::types::{KeyImage, Nonce, OwnershipProof, PublicKey, SecretKey, Signature};
 use wasm_bindgen::prelude::*;
@@ -165,6 +166,43 @@ fn sign_vote_inner(
     arr.push(&JsValue::from_str(&proof.signature.to_prefixed()));
     arr.push(&JsValue::from_str(&proof.key_image.to_prefixed()));
     Ok(arr)
+}
+
+/// Browser-facing version of [`crate::ring_digest`].
+///
+/// `ring` is the list of prefixed public keys (`pk_…_…`) the page fetched
+/// from the host — the exact value it is about to pass to
+/// `sign_vote_*_wasm`. Returns the canonical digest in the prefixed form
+/// (`ring_…_…`), independent of the ring's order. Compare it with the
+/// digest the election published out of band and refuse to sign on a
+/// mismatch: a ring that differs from the published one, even by a single
+/// member, would let the host tell this voter's ballot apart.
+///
+/// Throws a JS error string on a malformed entry, a duplicate member, or a
+/// ring of fewer than two keys — the same inputs signing would refuse.
+#[wasm_bindgen]
+pub fn ring_digest_wasm(ring: Vec<String>) -> Result<String, JsValue> {
+    let ring = parse_ring(ring)?;
+    let digest = crate::ring_digest(&ring).map_err(err_to_js)?;
+    Ok(digest.to_prefixed())
+}
+
+/// Check a fetched ring against a published digest. Browser-facing sugar
+/// over [`ring_digest_wasm`]: `expected` is the prefixed `ring_…_…` string
+/// the election published. Returns `true` iff `ring` is well-formed and
+/// its canonical digest equals `expected`; any parse failure is `false`.
+#[wasm_bindgen]
+pub fn ring_matches_digest_wasm(ring: Vec<String>, expected: &str) -> bool {
+    let Ok(expected) = RingDigest::from_prefixed(expected) else {
+        return false;
+    };
+    let Ok(ring) = parse_ring(ring) else {
+        return false;
+    };
+    match crate::ring_digest(&ring) {
+        Ok(digest) => digest == expected,
+        Err(_) => false,
+    }
 }
 
 /// Browser-facing version of [`crate::SecretKey::is_valid_bytes`].

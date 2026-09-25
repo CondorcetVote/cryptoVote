@@ -48,9 +48,10 @@ pub enum Error {
         /// The tag the constructor required, without the trailing `_`
         /// (`"pk"`, `"sk"`, `"ki"` or `"blsag"`).
         expected: &'static str,
-        /// The tag actually found, or empty when the string was not even
-        /// in `tag_body_checksum` shape. Never echoes the value's body,
-        /// so it cannot leak secret-key material.
+        /// The tag actually found, or empty when the string was not in
+        /// `tag_body_checksum` shape or its first part is not one of the
+        /// crate's own tags. Only known tags are ever echoed, so the error
+        /// cannot leak secret-key material pasted in the wrong place.
         got: String,
     },
     /// A prefixed string decoded structurally but its trailing checksum

@@ -5,28 +5,19 @@
 [![npm](https://img.shields.io/npm/v/@condorcet.vote/crypto-vote?logo=npm&label=npm)](https://www.npmjs.com/package/@condorcet.vote/crypto-vote)
 [![license](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE)
 
-> [!IMPORTANT]
-> **Not independently audited.** The crate is usable as it stands; two
-> caveats are worth knowing before an election whose result someone has a
-> real incentive to attack.
->
-> - **No third-party cryptographic review has taken place.** The
->   implementation, its test surface and its threat model have been
->   reviewed by the author with AI assistance. They are backed by 71 unit
->   and integration tests, four fuzz targets, and frozen protocol vectors
->   that pin the wire format across versions — but no outside
->   cryptographer has examined them.
-> - **The election-scoped key-image variant is not from a published
->   paper.** Standard BLSAG defines the linking tag as `I = x · H_p(P)`;
->   this crate uses `I_e = x · H_p(domain ‖ election_id ‖ P)` so the same
->   identity is unlinkable across separate elections. It is a small,
->   conservative modification of BLSAG, but it has **not** been formally
->   analysed in the cryptographic literature (as of writing).
->
-> In practice: fine for prototypes, research, teaching, internal and
-> associative ballots. For a high-stakes vote — contested outcome, funded
-> or motivated adversary, legal weight — treat the two points above as
-> open questions and commission a review first.
+> [!NOTE]
+> **Not independently audited.** The implementation, its test surface and
+> its threat model have been reviewed by the author with AI assistance,
+> and are backed by unit and integration tests, fuzz targets and frozen
+> protocol vectors that pin the wire format across versions. No outside
+> cryptographer has examined them yet. The linkable ring signature is
+> standard BLSAG; the only deviation is that the linking tag's base is
+> scoped by the election identifier, `I_e = x · H_p(domain ‖ election_id ‖ P)`,
+> which is the *event-oriented linkability* notion from the linkable ring
+> signature literature (Liu–Wei–Wong 2004; Tsang–Wei 2005 for e-voting)
+> applied to the per-key base. For an election with a motivated adversary
+> or legal weight, read the [threat model](#threat-model) and commission a
+> review first.
 
 A pure-Rust cryptographic oracle for **verifiable, anonymous, double-vote-resistant** ballots.
 
@@ -48,13 +39,60 @@ vote](#proving-ownership-of-a-vote-operation-d).
 ## Cryptographic choices
 
 - **Curve**: Ristretto255 (`curve25519-dalek`). Prime-order, constant-time, pure Rust.
-- **Ring signature scheme**: an experimental BLSAG (Back's Linkable
-  Spontaneous Anonymous Group) variant implemented locally from the
-  LSAG/BLSAG equations, with election-scoped key images.
+- **Ring signature scheme**: BLSAG (Back's Linkable Spontaneous
+  Anonymous Group) implemented locally from the LSAG/BLSAG equations,
+  with election-scoped key images. The signer's randomness is *hedged*:
+  derived from the secret key, the message and fresh CSPRNG output
+  together, so a faulty RNG cannot repeat a nonce and leak the key.
 - **Hash**: Blake2b-512 (`blake2` crate). Natively 64-byte output, fed
   directly into `Scalar::from_hash`.
 - **CSPRNG**: `SysRng`, which on `wasm32` delegates to `Crypto.getRandomValues`
   through the `getrandom` crate's `wasm_js` feature.
+
+## Threat model
+
+The library is a mathematical oracle. It guarantees exactly three things,
+and each one rests on an assumption the host must uphold:
+
+| Guarantee | Holds against | Assumes |
+|---|---|---|
+| **Unforgeability** — no valid proof without a secret key from the ring | anyone, including the host | discrete log on Ristretto255, Blake2b as a random oracle |
+| **Linkability** — one key image per `(secret key, election_id)` | anyone, including the host | the registrar enrolled **one identity per person** |
+| **Anonymity** — a proof does not reveal which ring member signed | the public, other voters, auditors | the host served **every voter the same ring and `election_id`** |
+
+What this means in practice:
+
+- **The host is trusted for anonymity, not just for eligibility.** A
+  ballot is anonymous within *the ring it was signed under*. A host that
+  hands each voter a slightly different ring (one decoy swapped, one
+  member missing) or a slightly different `election_id` (trailing space,
+  different suffix) can later tell whose ballot is whose by checking which
+  variant verifies. The cryptography cannot detect this; publication can.
+  Publish the frozen ring's [`ring_digest`](#checking-the-ring-you-were-served)
+  where voters can see it, and have the voting page refuse to sign when
+  the ring it fetched does not match.
+- **Not receipt-free, not coercion-resistant.** Any voter can prove how
+  they voted — with [Operation D](#proving-ownership-of-a-vote-operation-d),
+  or simply by handing over their secret key — and ballots are stored in
+  clear next to their key image. This is inherent to linkable ring
+  signatures and to verifiable receipts in general: vote buying and
+  coercion are *possible* by design. Use this scheme where verifiability
+  matters more than receipt-freeness (associations, boards, proxy votes),
+  not where voters may be pressured.
+- **One identity per person is the registrar's job.** A person enrolled
+  with two keys votes twice with two distinct key images and the library
+  cannot tell. Sybil resistance lives entirely in the enrolment process.
+- **Bound the ballot size.** Verification hashes the full ballot once
+  per ring member, so its cost is `O(ring size × ballot size)`. The
+  library imposes no limit; the host must (a few kilobytes is plenty for
+  any realistic ballot), otherwise an attacker can submit oversized
+  invalid ballots to burn verifier CPU.
+- **Use globally unique election identifiers.** If identities are reused
+  across organisations and two elections share an `election_id` string,
+  their key images coincide. A UUID avoids the question.
+- **What is *not* hidden:** the ring (who was allowed to vote), the number
+  of ballots cast, and every ballot's content. Only the mapping from
+  ballot to voter is.
 
 ## Anti-double-vote contract
 
@@ -150,6 +188,36 @@ For the same reason, the host should persist the ring it used to
 verify each ballot (or at least the election's frozen ring) alongside
 the ballot itself, so audits later on can rerun `verify_vote`
 deterministically.
+
+### Checking the ring you were served
+
+Because anonymity is exactly "which ring did I sign under", the voter's
+device should verify that the ring it fetched from the host is the ring
+the election published. `ring_digest` gives a canonical fingerprint of a
+ring: a pure function of the *set* of members (order does not matter,
+duplicates and rings of fewer than two keys are rejected, exactly like
+signing).
+
+```rust
+use crypto_vote::{generate_identity, ring_digest, RingDigest};
+
+let ring = vec![generate_identity().public_key, generate_identity().public_key];
+
+// The host publishes this next to the frozen ring (bulletin board,
+// election page, signed announcement …):
+let published = ring_digest(&ring).unwrap().to_prefixed();   // "ring_…_…"
+
+// The voter's device recomputes it from the ring it fetched and refuses
+// to sign on a mismatch.
+let fetched = ring.iter().rev().cloned().collect::<Vec<_>>(); // any order
+assert_eq!(ring_digest(&fetched).unwrap(), RingDigest::from_prefixed(&published).unwrap());
+```
+
+The digest is `Blake2b-512(domain ‖ n ‖ sorted keys)[..32]`, published in
+the prefixed form `ring_<64 hex>_<8 hex checksum>`. Every front end exposes
+it: `ring_digest_wasm(ring)` and `ring_matches_digest_wasm(ring, expected)`
+in the browser, the `ring_digest` Extism function, and `cryptovote
+ring-digest --ring ring.txt` on the CLI.
 
 ## Proving ownership of a vote (Operation D)
 
@@ -410,10 +478,11 @@ conveniences:
   │  │                 │
   │  │                 └ checksum: 4 bytes (8 hex chars)
   │  └ body: identical to to_hex()
-  └ tag: pk | sk | ki | blsag
+  └ tag: pk | sk | ki | blsag | own | nonce | ring
 ```
 
-- a **tag** up front (`pk_`, `sk_`, `ki_`, `blsag_`) says what kind of
+- a **tag** up front (`pk_`, `sk_`, `ki_`, `blsag_`, `own_`, `nonce_`,
+  `ring_`) says what kind of
   value it is, so a public key pasted where a key image was expected is
   caught immediately instead of failing deep in verification;
 - a **checksum** at the end (a 4-byte BLAKE3 digest, hex-encoded) catches
@@ -431,6 +500,9 @@ authenticity comes solely from the BLSAG proof.
 | `SecretKey` | `sk_` | `SecretKey::from_prefixed(s)` |
 | `KeyImage` | `ki_` | `KeyImage::from_prefixed(s)` |
 | `Signature` | `blsag_` | `Signature::from_prefixed(s, ring_size)` |
+| `OwnershipProof` | `own_` | `OwnershipProof::from_prefixed(s)` |
+| `Nonce` | `nonce_` | `Nonce::from_prefixed(s)` |
+| `RingDigest` | `ring_` | `RingDigest::from_prefixed(s)` |
 
 ```rust
 let id = crypto_vote::generate_identity();
@@ -445,7 +517,9 @@ assert!(crypto_vote::KeyImage::from_prefixed(&pretty).is_err());
 
 `from_prefixed` returns `Error::InvalidPrefix` (missing/wrong tag) or
 `Error::InvalidChecksum` (mistyped or corrupted value), in addition to
-the usual length / encoding errors.
+the usual length / encoding errors. The error only ever echoes one of
+the crate's own tags back, never an arbitrary first segment, so a secret
+pasted in the wrong slot cannot end up in a log line.
 
 **The WASM, Extism and CLI front ends speak the prefixed format
 *exclusively*** — it is all they emit and all they accept; bare hex is
@@ -574,6 +648,11 @@ key_image=ki_…_…
 $ cryptovote verify --vote "option-A" --election-id "election-2026-05" \
     --signature blsag_…_… --key-image ki_…_… --ring ring.txt
 valid
+
+# Fingerprint an authorised list (order-independent), to publish next to
+# the ring or to compare against a published value.
+$ cryptovote ring-digest --ring ring.txt
+digest=ring_…_…
 ```
 
 Every key / signature argument is the prefixed form (`pk_…`,
@@ -583,7 +662,8 @@ the prefixed form.
 ## Vote payload format
 
 The library treats the vote as **opaque bytes** — `sign_vote` and
-`verify_vote` both take `&[u8]`, with no size limit and no parsing.
+`verify_vote` both take `&[u8]`, with no parsing and no built-in size
+limit (the host should enforce one; see the [threat model](#threat-model)).
 JSON, Protobuf, raw text, or arbitrary binary all work the same way.
 The WASM and Extism bindings expose **two entry points** per operation
 to cover this: a *text* one (`vote` as a UTF-8 string) and a *binary*
@@ -688,6 +768,8 @@ import init, {
     secret_key_from_prefixed_wasm,      // import sk_… string → bytes
     secret_key_to_prefixed_wasm,        // export bytes → sk_… string
     is_valid_prefixed_secret_key_wasm,  // validate an sk_… string
+    ring_digest_wasm,                   // fingerprint a ring → ring_… string
+    ring_matches_digest_wasm,           // compare a fetched ring with a published digest
 } from "@condorcet.vote/crypto-vote";
 
 // Instantiate the WASM once. A bundler resolves the .wasm asset for you;
@@ -733,6 +815,8 @@ import init, {
     secret_key_from_prefixed_wasm,
     secret_key_to_prefixed_wasm,
     is_valid_prefixed_secret_key_wasm,
+    ring_digest_wasm,
+    ring_matches_digest_wasm,
 } from "@condorcet.vote/crypto-vote"; // or "./pkg/crypto_vote.js" when self-built
 
 await init();
@@ -901,6 +985,13 @@ const electionId = "550e8400-e29b-41d4-a716-446655440000";
 //    Each entry is exactly what `PublicKey::to_prefixed()` produces.
 const ring = await fetch("/api/election/ring").then(r => r.json());
 
+//    Anonymity is exactly "which ring did I sign under", so check the
+//    ring against the digest the election published out of band (see
+//    the threat model) and refuse to sign on a mismatch.
+if (!ring_matches_digest_wasm(ring, PUBLISHED_RING_DIGEST /* "ring_…_…" */)) {
+    throw new Error("the ring served by the host is not the published one");
+}
+
 // 4. Read the secret bytes back from wherever you persisted them.
 //    `sign_vote_str_wasm` takes the secret as a `Uint8Array` of length
 //    32. Wrap the call in try/finally so the in-memory copy of the
@@ -1048,6 +1139,7 @@ See [Encoding formats](#encoding-formats).
 | `verify_vote_str` | `{"vote": <str>, "election_id": <str>, "signature": <blsag>, "key_image": <ki>, "ring": [<pk>, …]}` | `{"valid": <bool>}` |
 | `verify_vote_hex` | `{"vote": <hex>, "election_id": <str>, "signature": <blsag>, "key_image": <ki>, "ring": [<pk>, …]}` | `{"valid": <bool>}` |
 | `is_valid_secret_key` | `{"secret": <sk>}` | `{"valid": <bool>}` |
+| `ring_digest` | `{"ring": [<pk>, …]}` | `{"digest": <ring>}` |
 
 - **`_str`** — `vote` is a plain JSON string; its UTF-8 bytes *are* the
   ballot, fed verbatim with no decoding. Ergonomic for text ballots (a
@@ -1197,9 +1289,12 @@ cargo test
 
 Tests cover round-trips, same-election deterministic tags,
 cross-election tag separation, ring-order independence, bit-level
-malleability resistance on both the signature and the key image, and
-every documented "invalid" case (tampered vote, tampered signature,
-swapped tag, wrong ring, subset/superset ring, malformed inputs).
+malleability resistance on both the signature and the key image, ring
+digest stability, and every documented "invalid" case (tampered vote,
+tampered signature, swapped tag, wrong ring, subset/superset ring,
+malformed inputs). `tests/upgrade_vectors.rs` freezes a signature, a key
+image, a ring digest and every prefixed encoding so a protocol drift is
+caught before release.
 
 ### Linting
 
@@ -1244,7 +1339,7 @@ src/
 ├── error.rs          — `Error` enum (input parsing only)
 ├── types.rs          — PublicKey / SecretKey / Signature / KeyImage / VoteProof
 ├── identity.rs       — Operation A
-├── blsag.rs          — Experimental election-scoped BLSAG implementation
+├── blsag.rs          — BLSAG with election-scoped key images and hedged nonces
 ├── signing.rs        — Operation B (ring canonicalisation + NFC of election_id)
 ├── verifying.rs      — Operation C
 ├── wasm.rs           — wasm-bindgen layer (feature-gated, Zeroizing secrets)
@@ -1256,6 +1351,7 @@ tests/
 fuzz/
 ├── Cargo.toml        — separate package, excluded from the workspace
 └── fuzz_targets/     — four cargo-fuzz harnesses (see "Fuzzing")
+CHANGELOG.md          — release notes, one entry per published version
 ```
 
 ## License

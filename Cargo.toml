@@ -5,7 +5,7 @@
 # which is what `use crypto_vote::…` and every generated artefact
 # (`crypto_vote.wasm`, `crypto_vote.js`, `libcrypto_vote.rlib`) refer to.
 name = "crypto-vote"
-version = "0.4.2"
+version = "1.0.0"
 # Edition 2024 implies a floor of Rust 1.85; we do not pin `rust-version`
 # explicitly because CI only tests against `stable`, so a stricter MSRV
 # would be an unverified promise.
@@ -70,6 +70,12 @@ curve25519-dalek = { version = "5.0.0", features = ["digest", "rand_core", "zero
 
 # Wipe secret scalars when their wrapper leaves scope.
 zeroize = "1"
+
+# Constant-time equality / selection, used to locate the signer's slot in
+# the canonical ring without an early-exit scan whose timing would
+# reveal the index. Already a transitive dependency of curve25519-dalek;
+# the version is aligned with the one it uses.
+subtle = { version = "2", default-features = false }
 
 # Hash function (cryptographic core of every challenge in the protocol).
 # Blake2b-512 produces a 64-byte digest natively, which is exactly what

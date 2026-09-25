@@ -6,7 +6,8 @@
 //! oracle contract.
 
 use crypto_vote::{
-    Error, KeyImage, PublicKey, Signature, generate_identity, sign_vote, verify_vote,
+    Error, KeyImage, PublicKey, RingDigest, Signature, generate_identity, ring_digest, sign_vote,
+    verify_vote,
 };
 
 const EID: &str = "550e8400-e29b-41d4-a716-446655440000";
@@ -97,6 +98,36 @@ fn prefixed_rejects_cross_type_and_corruption() {
         PublicKey::from_prefixed(&corrupted).unwrap_err(),
         Error::InvalidChecksum
     );
+}
+
+#[test]
+fn ring_digest_lets_a_voter_detect_a_tampered_ring() {
+    // The published ring and the ring a malicious host hands one voter
+    // differ by a single decoy. The voter recomputes the digest of what
+    // they were served and compares it with the published one.
+    let (_, published) = fresh_election(6);
+    let published_digest = ring_digest(&published).unwrap().to_prefixed();
+
+    let mut served = published.clone();
+    served.reverse(); // order must not matter
+    assert_eq!(
+        ring_digest(&served).unwrap(),
+        RingDigest::from_prefixed(&published_digest).unwrap()
+    );
+
+    served[2] = generate_identity().public_key; // one member swapped
+    assert_ne!(
+        ring_digest(&served).unwrap(),
+        RingDigest::from_prefixed(&published_digest).unwrap()
+    );
+}
+
+#[test]
+fn ring_digest_refuses_rings_signing_would_refuse() {
+    let (_, ring) = fresh_election(2);
+    assert_eq!(ring_digest(&ring[..1]).unwrap_err(), Error::RingTooSmall);
+    let dup = vec![ring[0], ring[1], ring[0]];
+    assert_eq!(ring_digest(&dup).unwrap_err(), Error::DuplicateRingMember);
 }
 
 #[test]

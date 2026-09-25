@@ -24,6 +24,7 @@
 //! | B | Sign a ballot     | Voter's device (WASM in the browser) | [`sign_vote`] |
 //! | C | Validate a proof  | Host / server | [`verify_vote`] |
 //! | D | Prove ownership of a key image | Voter's device (prove) / anyone (verify) | [`prove_ownership`] / [`verify_ownership`] |
+//! | — | Fingerprint a ring | Host (publish) / voter's device (check) | [`ring_digest`] |
 //!
 //! Operation D is optional and opt-in: it is the inverse of the ring
 //! signature's anonymity. It lets the holder of a secret key prove to an
@@ -55,8 +56,14 @@
 //! part of what gets hashed into every signature, so adding or
 //! removing a member mid-election invalidates every signature
 //! produced before the change. All voter identities must therefore be
-//! generated during the enrolment window. See the README for the
-//! details.
+//! generated during the enrolment window.
+//!
+//! The same fact has a privacy side: a ballot is anonymous *within the
+//! ring it was signed under*, so a host that serves each voter a
+//! slightly different ring can tell their ballots apart. [`ring_digest`]
+//! gives the host a canonical fingerprint to publish and the voter's
+//! device a value to check before signing. The README's threat model
+//! spells out what the host is trusted for.
 //!
 //! ## Cryptographic choices
 //!
@@ -64,11 +71,13 @@
 //!   Picked because it is implemented in pure Rust by
 //!   `curve25519-dalek`, has constant-time arithmetic, and avoids the
 //!   small-subgroup pitfalls of raw Curve25519.
-//! - **Ring signature**: an experimental BLSAG (Back's Linkable
-//!   Spontaneous Anonymous Group) variant implemented locally from the
-//!   LSAG/BLSAG equations. The linking tag is scoped by `election_id`,
-//!   so the same identity remains linkable inside one election but not
-//!   publicly correlatable across different elections.
+//! - **Ring signature**: BLSAG (Back's Linkable Spontaneous Anonymous
+//!   Group) implemented locally from the LSAG/BLSAG equations. The
+//!   linking tag is scoped by `election_id` (event-oriented
+//!   linkability), so the same identity remains linkable inside one
+//!   election but not publicly correlatable across different elections.
+//!   Signing randomness is hedged with the secret key and the message
+//!   (see the module docs of `src/blsag.rs`).
 //! - **Hash**: Blake2b-512 (via the `blake2` crate). Picked because it
 //!   produces a 64-byte digest natively — which is exactly what every
 //!   challenge in the BLSAG protocol needs to feed back into a
@@ -148,8 +157,8 @@ pub mod extism;
 pub use crate::error::{Error, Result};
 pub use crate::identity::{Identity, generate_identity};
 pub use crate::ownership::{generate_nonce, prove_ownership, verify_ownership};
-pub use crate::signing::sign_vote;
+pub use crate::signing::{ring_digest, sign_vote};
 pub use crate::types::{
-    KeyImage, Nonce, OwnershipProof, PublicKey, SecretKey, Signature, VoteProof,
+    KeyImage, Nonce, OwnershipProof, PublicKey, RingDigest, SecretKey, Signature, VoteProof,
 };
 pub use crate::verifying::verify_vote;

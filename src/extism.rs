@@ -34,6 +34,11 @@
 //! | `generate_nonce`       | *(empty)*                                                                   | `{"nonce": nonce_…}`             |
 //! | `prove_ownership`      | `{"secret": sk_…, "election_id": str, "nonce": nonce_…}`                     | `{"proof": own_…}`               |
 //! | `verify_ownership`     | `{"public": pk_…, "key_image": ki_…, "election_id": str, "nonce": nonce_…, "proof": own_…}` | `{"valid": bool}` |
+//! | `ring_digest`          | `{"ring": [pk_…, …]}`                                                        | `{"digest": ring_…}`             |
+//!
+//! `ring_digest` computes the canonical digest of a ring (see
+//! [`crate::ring_digest`]) so a voter's device, or anyone, can check that
+//! the ring it was handed is the one the election published.
 //!
 //! `generate_nonce` / `prove_ownership` / `verify_ownership` expose
 //! Operation D — proof of ownership of a key image (see
@@ -355,6 +360,34 @@ fn verify_ownership_inner(input: &VerifyOwnershipIn) -> Option<bool> {
         nonce.as_bytes(),
         &proof,
     ))
+}
+
+#[derive(Deserialize)]
+pub struct RingDigestIn {
+    pub ring: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct RingDigestOut {
+    /// Prefixed ring digest, e.g. `ring_<64 hex>_<8 hex checksum>`.
+    pub digest: String,
+}
+
+/// Canonical digest of an authorised ring. See [`crate::ring_digest`].
+/// Input: `{"ring": [pk_…, …]}` in any order. Output: `{"digest": ring_…}`.
+/// A malformed entry, a duplicate member or a ring of fewer than two keys
+/// is a plugin-level error, exactly as it would be for `sign_vote_*`.
+#[plugin_fn]
+pub fn ring_digest(Json(input): Json<RingDigestIn>) -> FnResult<Json<RingDigestOut>> {
+    let ring: Vec<PublicKey> = input
+        .ring
+        .iter()
+        .map(|h| PublicKey::from_prefixed(h))
+        .collect::<Result<_, _>>()?;
+    let digest = crate::ring_digest(&ring)?;
+    Ok(Json(RingDigestOut {
+        digest: digest.to_prefixed(),
+    }))
 }
 
 /// Shared verify core for both `verify_vote_*` entry points: the vote

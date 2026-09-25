@@ -388,7 +388,10 @@ impl Signature {
                 got: bytes.len(),
             });
         }
-        let mut chunks = bytes.chunks_exact(32);
+        // The length check above guarantees an exact split into 32-byte
+        // chunks with no remainder.
+        let (chunks, _) = bytes.as_chunks::<32>();
+        let mut chunks = chunks.iter();
         let challenge = scalar_from_chunk(chunks.next().expect("challenge present"))?;
         let mut responses = Vec::with_capacity(ring_size);
         for _ in 0..ring_size {
@@ -613,6 +616,76 @@ impl Nonce {
     }
 }
 
+/// The canonical digest of an authorised ring, produced by
+/// [`crate::ring_digest`].
+///
+/// 32 bytes (the first half of a Blake2b-512 over the domain-separated,
+/// sorted ring). It identifies a *set* of public keys: two rings with the
+/// same members in any order share a digest; add, remove or swap one
+/// member and the digest changes. It is public and carries no secret.
+///
+/// The host publishes it next to the frozen ring; a voter's device
+/// recomputes it from the ring it fetched and refuses to sign if the two
+/// differ. Like the other public values it has bare-hex and prefixed
+/// (`ring_<hex>_<checksum>`) encodings; the prefixed one is what the WASM,
+/// Extism and CLI front ends emit and accept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RingDigest {
+    pub(crate) bytes: [u8; 32],
+}
+
+impl RingDigest {
+    /// Wrap 32 raw digest bytes (e.g. read back from the bulletin board).
+    /// Infallible — any 32-byte value is a syntactically valid digest.
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        RingDigest { bytes }
+    }
+
+    /// The raw 32 bytes.
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.bytes
+    }
+
+    /// Hex-encode using lowercase digits (64 characters).
+    pub fn to_hex(&self) -> String {
+        hex::encode(self.bytes)
+    }
+
+    /// Decode from a 64-character hex string.
+    pub fn from_hex(s: &str) -> Result<Self> {
+        let bytes = hex::decode(s).map_err(|_| Error::InvalidHex)?;
+        let arr: [u8; 32] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::InvalidLength {
+                what: "RingDigest",
+                expected: 32,
+                got: bytes.len(),
+            })?;
+        Ok(RingDigest::from_bytes(arr))
+    }
+
+    /// Encode in the human-friendly prefixed format: `ring_<hex>_<checksum>`.
+    pub fn to_prefixed(&self) -> String {
+        encoding::encode_prefixed(Tag::RingDigest, &self.bytes)
+    }
+
+    /// Decode a `ring_<hex>_<checksum>` string produced by
+    /// [`RingDigest::to_prefixed`], verifying the tag and the checksum.
+    pub fn from_prefixed(s: &str) -> Result<Self> {
+        let bytes = encoding::decode_prefixed(Tag::RingDigest, s)?;
+        let arr: [u8; 32] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::InvalidLength {
+                what: "RingDigest",
+                expected: 32,
+                got: bytes.len(),
+            })?;
+        Ok(RingDigest::from_bytes(arr))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,6 +749,27 @@ mod tests {
         let bytes = id.secret_key.to_bytes();
         assert!(SecretKey::is_valid_bytes(&bytes));
         assert!(SecretKey::is_valid_hex(&hex::encode(bytes)));
+    }
+
+    #[test]
+    fn ring_digest_round_trips_through_every_encoding() {
+        let d = RingDigest::from_bytes([9u8; 32]);
+        assert_eq!(RingDigest::from_hex(&d.to_hex()).unwrap(), d);
+        assert_eq!(RingDigest::from_prefixed(&d.to_prefixed()).unwrap(), d);
+        assert!(d.to_prefixed().starts_with("ring_"));
+        assert_eq!(
+            RingDigest::from_hex("abcd").unwrap_err(),
+            Error::InvalidLength {
+                what: "RingDigest",
+                expected: 32,
+                got: 2
+            }
+        );
+        // A key image's prefixed form must not decode as a ring digest.
+        let ki =
+            KeyImage::from_hex("e2f2ae0a6abc4e71a884a961c500515f58e30b6aa582dd8db6a65945e08d2d76")
+                .unwrap();
+        assert!(RingDigest::from_prefixed(&ki.to_prefixed()).is_err());
     }
 
     #[test]

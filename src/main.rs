@@ -5,13 +5,15 @@
 //! `clap`). When compiling for WebAssembly, build with
 //! `--no-default-features --features wasm` and this file is ignored.
 //!
-//! Three subcommands map one-to-one onto the three library operations:
+//! Three subcommands map one-to-one onto the three core library
+//! operations, plus one utility to fingerprint an authorised list:
 //!
 //! ```text
 //! cryptovote keygen
 //! cryptovote sign   --secret-file <file> --vote <text> --election-id <text> --ring <file>
 //! cryptovote verify --vote <text> --election-id <text> \
-//!                   --signature <hex> --key-image <hex> --ring <file>
+//!                   --signature <blsag_…> --key-image <ki_…> --ring <file>
+//! cryptovote ring-digest --ring <file>
 //! ```
 //!
 //! The ring file is a plain text file with one prefixed public key
@@ -22,7 +24,8 @@
 
 use clap::{Parser, Subcommand};
 use crypto_vote::{
-    KeyImage, PublicKey, SecretKey, Signature, generate_identity, sign_vote, verify_vote,
+    KeyImage, PublicKey, SecretKey, Signature, generate_identity, ring_digest, sign_vote,
+    verify_vote,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -93,6 +96,15 @@ enum Command {
         /// Linking tag in prefixed form (`ki_…`).
         #[arg(long = "key-image")]
         key_image: String,
+        /// File with one prefixed public key (`pk_…`) per line.
+        #[arg(long)]
+        ring: PathBuf,
+    },
+
+    /// Print the canonical digest (`ring_…`) of an authorised list, so
+    /// voters can check the ring they were served against the one the
+    /// election published. Order-independent.
+    RingDigest {
         /// File with one prefixed public key (`pk_…`) per line.
         #[arg(long)]
         ring: PathBuf,
@@ -168,6 +180,13 @@ fn dispatch(cmd: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 // shell-friendly way to compose with `||`.
                 Ok(ExitCode::from(1))
             }
+        }
+
+        Command::RingDigest { ring } => {
+            let ring = read_ring(&ring)?;
+            let digest = ring_digest(&ring)?;
+            println!("digest={}", digest.to_prefixed());
+            Ok(ExitCode::SUCCESS)
         }
     }
 }

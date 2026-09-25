@@ -11,7 +11,24 @@
 //! `I_e = x * H_p(domain || len(election_id) || election_id || P)`.
 //! Verification applies the same contextual `H_p` to each ring member.
 //! This preserves same-election linkability while preventing public
-//! correlation of the same secret key across different elections.
+//! correlation of the same secret key across different elections. It is
+//! the "event-oriented linkability" notion from the linkable ring
+//! signature literature (Liu–Wei–Wong 2004; Tsang–Wei 2005 for e-voting),
+//! with the event identifier folded into the per-key base.
+//!
+//! ## Hedged randomness
+//!
+//! The signer's commitment scalar `alpha` and the decoy responses are
+//! not drawn straight from the CSPRNG. They are derived by hashing the
+//! secret key, the message and 64 fresh random bytes together (the
+//! "hedged" construction used by e.g. XEdDSA / hedged Ed25519). With a
+//! healthy RNG the output is indistinguishable from uniform; with a
+//! broken or replayed RNG (VM snapshot restored twice, fork without
+//! reseed) the secret key and message still make `alpha` unique per
+//! signature, so a nonce reuse — which would leak the secret key by a
+//! single subtraction — cannot happen. This only changes how the signer
+//! samples its randomness; the signature format and the verifier are
+//! untouched.
 
 use blake2::{Blake2b512, Digest};
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
@@ -19,10 +36,12 @@ use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::MultiscalarMul;
 use rand::rngs::SysRng;
-use rand_core::UnwrapErr;
+use rand_core::{Rng, UnwrapErr};
+use zeroize::Zeroizing;
 
 const KEY_IMAGE_DOMAIN: &[u8] = b"crypto_vote:blsag:key-image-point";
 const CHALLENGE_DOMAIN: &[u8] = b"crypto_vote:blsag:challenge";
+const NONCE_DOMAIN: &[u8] = b"crypto_vote:blsag:hedged-nonce";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ContextualBlsag {
@@ -42,9 +61,17 @@ pub(crate) fn sign(
     let key_image_base = hash_public_key_to_point(election_id, signer_public_key);
     let key_image = secret_key * key_image_base;
 
+    // One fresh entropy draw per signature, mixed with the secret key and
+    // the message so no two signatures can share a nonce even if the RNG
+    // misbehaves. See the module docs. Label 0 is `alpha`, label `i + 1`
+    // is the decoy response for ring slot `i`.
     let mut rng = UnwrapErr(SysRng);
-    let alpha = Scalar::random(&mut rng);
-    let mut responses: Vec<Scalar> = ring.iter().map(|_| Scalar::random(&mut rng)).collect();
+    let mut entropy = Zeroizing::new([0u8; 64]);
+    rng.fill_bytes(&mut entropy[..]);
+    let alpha = hedged_scalar(&secret_key, message, &entropy, 0);
+    let mut responses: Vec<Scalar> = (0..ring.len())
+        .map(|i| hedged_scalar(&secret_key, message, &entropy, i as u64 + 1))
+        .collect();
     let mut challenges = vec![Scalar::ZERO; ring.len()];
 
     let mut i = (secret_index + 1) % ring.len();
@@ -140,6 +167,34 @@ fn challenge_scalar(
     Scalar::from_hash(hash)
 }
 
+/// Derive one signing-side scalar from the secret key, the message, a
+/// per-signature entropy block and a label.
+///
+/// `label` separates the different scalars drawn for the same signature
+/// (`alpha` vs. each decoy response). The secret key goes in first so a
+/// broken RNG (constant `entropy`) still yields a per-key, per-message
+/// nonce; the entropy goes in so a healthy RNG still yields a fresh,
+/// uniformly distributed one every time. The output distribution is what
+/// `Scalar::random` gives, so verification is unaffected.
+///
+/// Shared with [`crate::ownership`], which hedges its Chaum–Pedersen
+/// commitment the same way with its own, domain-prefixed `message`.
+pub(crate) fn hedged_scalar(
+    secret_key: &Scalar,
+    message: &[u8],
+    entropy: &[u8; 64],
+    label: u64,
+) -> Scalar {
+    let mut hash = Blake2b512::new();
+    hash.update(NONCE_DOMAIN);
+    hash.update(secret_key.as_bytes());
+    hash.update((message.len() as u64).to_be_bytes());
+    hash.update(message);
+    hash.update(entropy);
+    hash.update(label.to_be_bytes());
+    Scalar::from_hash(hash)
+}
+
 /// Hash-to-group base for the linkability tag, scoped by `election_id`.
 ///
 /// Exposed to the crate (not the public API) so the ownership proof in
@@ -173,6 +228,39 @@ mod tests {
             secret_key * hash_public_key_to_point(b"election-A", public_key),
             secret_key * hash_public_key_to_point(b"election-B", public_key),
         );
+    }
+
+    #[test]
+    fn hedged_scalars_differ_by_label_and_entropy() {
+        // Different labels (alpha vs. each decoy) and different entropy
+        // draws must never collide; a constant entropy block must still
+        // give distinct scalars per label (the "broken RNG" case).
+        let secret_key = Scalar::from(42u64);
+        let zero = [0u8; 64];
+        let one = [1u8; 64];
+        let a0 = hedged_scalar(&secret_key, b"m", &zero, 0);
+        let a1 = hedged_scalar(&secret_key, b"m", &zero, 1);
+        let b0 = hedged_scalar(&secret_key, b"m", &one, 0);
+        let c0 = hedged_scalar(&secret_key, b"other", &zero, 0);
+        assert_ne!(a0, a1);
+        assert_ne!(a0, b0);
+        assert_ne!(a0, c0);
+    }
+
+    #[test]
+    fn two_signatures_of_the_same_message_differ() {
+        // Hedging must not make signing deterministic: the entropy block
+        // still randomises every signature.
+        let mut rng = UnwrapErr(SysRng);
+        let secret_key = Scalar::random(&mut rng);
+        let ring = vec![
+            secret_key * RISTRETTO_BASEPOINT_POINT,
+            RistrettoPoint::random(&mut rng),
+        ];
+        let p1 = sign(secret_key, &ring, 0, b"e", b"m");
+        let p2 = sign(secret_key, &ring, 0, b"e", b"m");
+        assert_ne!(p1.responses, p2.responses);
+        assert_eq!(p1.key_image, p2.key_image);
     }
 
     #[test]

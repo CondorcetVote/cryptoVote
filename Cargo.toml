@@ -80,8 +80,8 @@ subtle = { version = "2", default-features = false }
 # Hash function (cryptographic core of every challenge in the protocol).
 # Blake2b-512 produces a 64-byte digest natively, which is exactly what
 # curve25519-dalek's `Scalar::from_hash` and `RistrettoPoint::from_hash`
-# consume. The 0.11 release candidate matches curve25519-dalek 5's digest API.
-blake2 = { version = "0.11.0-rc.6", default-features = false }
+# consume. 0.11 is the release that matches curve25519-dalek 5's digest API.
+blake2 = { version = "0.11", default-features = false }
 
 # Hash used *only* for the human-friendly prefixed encoding's checksum
 # (see `src/encoding.rs`). This is an integrity / typo-detection digest,

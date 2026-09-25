@@ -22,12 +22,6 @@
 # only a security win while someone is still watching for the patch that
 # fixes the next vulnerability.
 #
-# Note on pre-releases: Dependabot normally skips them, but it *will*
-# propose newer pre-releases for a dependency already pinned to one. That
-# is deliberate here — `blake2` is on `0.11.0-rc.6` because the 0.11 line
-# is what matches curve25519-dalek 5's `digest` API and no final 0.11 has
-# shipped yet; we want to hear about `rc.7` and eventually `0.11.0`.
-#
 # Every PR still has to pass the full CI job (test + fmt + clippy on both
 # the native and WASM feature sets), so a bump that breaks the build or
 # the frozen protocol vectors in `tests/upgrade_vectors.rs` cannot merge.

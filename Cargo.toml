@@ -28,7 +28,7 @@ categories = ["cryptography", "wasm"]
 # downstream auditor should be able to run the suite from the published
 # crate alone. `fuzz/` needs no entry — it is its own package, so cargo
 # already leaves it out.
-exclude = [".github", ".gitignore", "AGENTS.md"]
+exclude = [".github", ".gitignore", "AGENTS.md", "scripts"]
 
 # A `cdylib` target lets `wasm-pack` produce a browser-ready WebAssembly
 # module, while `rlib` keeps the crate usable as a regular Rust dependency
@@ -180,6 +180,11 @@ harness = false
 # Concrete WASM bundles still get `panic = "abort"` via the
 # `wasm-release` profile below; native builds tolerate `unwind` with a
 # negligible size cost.
+#
+# Reproducibility: release artefacts are built through
+# `scripts/reproducible-build.sh`, which remaps the absolute paths baked
+# into panic-location strings. `trim-paths` would express this here, but
+# it is still unstable. See "Reproducible builds" in README.md.
 [profile.release]
 opt-level = "z"
 lto = true

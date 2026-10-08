@@ -446,6 +446,59 @@ cargo build --profile wasm-release --locked --target wasm32-wasip1 --lib --no-de
 See [Extism plugin](#extism-plugin) for the host-side usage from JS,
 Node, and other Extism SDKs.
 
+### Reproducible builds
+
+The release artefacts are **bit-for-bit reproducible at a fixed Rust
+toolchain and build system**: rebuild the same commit with the same
+`rustc` version on the same OS/libc and you get byte-identical output,
+whatever the build user or checkout directory. This covers the native
+CLI binaries (the static musl ones are where it matters most), both
+WebAssembly bundles, and the `.tar.gz` archives wrapping them. Three
+ingredients make that hold:
+
+- **`--locked`** pins the dependency graph to the committed
+  `Cargo.lock`, so no dependency is silently re-resolved.
+- **`scripts/reproducible-build.sh`** runs the build with
+  `--remap-path-prefix` in `RUSTFLAGS`. `rustc` bakes absolute source
+  paths into the binary as panic-location strings — the Cargo registry
+  (`$CARGO_HOME/registry`), the toolchain sysroot (monomorphised `std`),
+  and the workspace. These are live program data, not debug info, so
+  `strip` does **not** remove them; the script rewrites them to the fixed
+  virtual prefixes `/cargo`, `/rustc`, and `/build`. Cargo's `trim-paths`
+  profile option would be the declarative home for this, but it is still
+  unstable (nightly only).
+- **`scripts/reproducible-tar.sh`** builds the archives with sorted
+  entries, timestamps pinned to the commit date, normalised
+  ownership/permissions, and a gzip header without name or mtime. It
+  needs GNU tar (`gtar` on macOS).
+
+To reproduce a released artefact locally, check out the release tag and
+run the same commands as the CI, from the repository root:
+
+```bash
+# native static CLI
+scripts/reproducible-build.sh \
+    cargo build --release --locked --target x86_64-unknown-linux-musl --bin cryptovote
+sha256sum target/x86_64-unknown-linux-musl/release/cryptovote
+
+# Extism plugin
+scripts/reproducible-build.sh \
+    cargo build --profile wasm-release --locked --target wasm32-wasip1 \
+    --lib --no-default-features --features extism
+sha256sum target/wasm32-wasip1/wasm-release/crypto_vote.wasm
+
+# browser bundle
+scripts/reproducible-build.sh \
+    wasm-pack build --profile wasm-release --target web --out-dir pkg-browser \
+    -- --no-default-features --features wasm --locked
+scripts/reproducible-tar.sh crypto_vote-wasm-browser.tar.gz pkg-browser
+sha256sum crypto_vote-wasm-browser.tar.gz
+```
+
+The glibc (`-dynamic`) targets also depend on the system linker, so
+their reproducibility additionally assumes the same binutils/libc as the
+runner.
+
 ## Using the library
 
 ```rust

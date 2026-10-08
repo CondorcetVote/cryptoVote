@@ -253,7 +253,11 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
           CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
-        run: cargo build --release --locked --target ${{ matrix.target }} --bin cryptovote
+        # `reproducible-build.sh` remaps the absolute paths rustc bakes
+        # into panic-location strings (see README, "Reproducible builds").
+        run: |
+          scripts/reproducible-build.sh \
+            cargo build --release --locked --target ${{ matrix.target }} --bin cryptovote
 
       - name: Package binary
         id: pkg
@@ -262,7 +266,7 @@ jobs:
           mkdir "$STAGING"
           cp target/${{ matrix.target }}/release/cryptovote "$STAGING/"
           cp README.md "$STAGING/" 2>/dev/null || true
-          tar -czf "${STAGING}.tar.gz" "$STAGING"
+          scripts/reproducible-tar.sh "${STAGING}.tar.gz" "$STAGING"
           # Print sha256 alongside the artefact for downstream verification.
           sha256sum "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
           echo "archive=${STAGING}.tar.gz" >> "$GITHUB_OUTPUT"
@@ -316,8 +320,9 @@ jobs:
         # that pins `panic = "abort"` (see Cargo.toml for the rationale
         # — the plain `release` profile leaves panic at the default to
         # avoid the cdylib/cargo-bench build-graph collision).
+        # `reproducible-build.sh`: see the "Build release binary" step.
         run: |
-          wasm-pack build \
+          scripts/reproducible-build.sh wasm-pack build \
             --profile wasm-release \
             --target web \
             --out-dir pkg-browser \
@@ -328,7 +333,7 @@ jobs:
 
       - name: Package browser bundle
         run: |
-          tar -czf crypto_vote-wasm-browser.tar.gz pkg-browser
+          scripts/reproducible-tar.sh crypto_vote-wasm-browser.tar.gz pkg-browser
           sha256sum crypto_vote-wasm-browser.tar.gz > crypto_vote-wasm-browser.tar.gz.sha256
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -375,7 +380,10 @@ jobs:
         # host SDK (browser via `@extism/extism`, Node, Python, Go, …).
         # `--profile wasm-release` picks the WASM-tuned profile that
         # adds `panic = "abort"` on top of release (see Cargo.toml).
-        run: cargo build --profile wasm-release --locked --target wasm32-wasip1 --lib --no-default-features --features extism
+        # `reproducible-build.sh`: see the "Build release binary" step.
+        run: |
+          scripts/reproducible-build.sh \
+            cargo build --profile wasm-release --locked --target wasm32-wasip1 --lib --no-default-features --features extism
 
       - name: Package Extism plugin
         # Ship the `.wasm` raw rather than tarred: it is a single file

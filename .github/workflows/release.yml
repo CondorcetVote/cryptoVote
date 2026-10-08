@@ -7,12 +7,17 @@
 #
 # Artefacts produced:
 #
-#   1. cryptovote-x86_64-unknown-linux-gnu.tar.gz   — x64 Linux CLI (glibc-linked)
-#   2. cryptovote-x86_64-unknown-linux-musl.tar.gz  — x64 Linux CLI (fully static musl)
-#   3. cryptovote-aarch64-unknown-linux-gnu.tar.gz  — ARM64 Linux CLI (glibc-linked)
-#   4. cryptovote-aarch64-unknown-linux-musl.tar.gz — ARM64 Linux CLI (fully static musl)
-#   5. cryptovote-riscv64gc-unknown-linux-gnu.tar.gz — RISC-V 64 Linux CLI (glibc-linked)
-#   6. cryptovote-aarch64-apple-darwin.tar.gz       — Apple Silicon macOS CLI
+# The Linux CLI archive names carry an explicit linking suffix:
+# `-dynamic` means glibc-linked (requires a host glibc at least as new as
+# the build runner's — see the note at the end of this list), `-static`
+# means a fully self-contained musl binary that runs on any distro.
+#
+#   1. cryptovote-x86_64-unknown-linux-gnu-dynamic.tar.gz   — x64 Linux CLI (glibc-linked, dynamic)
+#   2. cryptovote-x86_64-unknown-linux-musl-static.tar.gz   — x64 Linux CLI (fully static musl)
+#   3. cryptovote-aarch64-unknown-linux-gnu-dynamic.tar.gz  — ARM64 Linux CLI (glibc-linked, dynamic)
+#   4. cryptovote-aarch64-unknown-linux-musl-static.tar.gz  — ARM64 Linux CLI (fully static musl)
+#   5. cryptovote-riscv64gc-unknown-linux-gnu-dynamic.tar.gz — RISC-V 64 Linux CLI (glibc-linked, dynamic)
+#   6. cryptovote-aarch64-apple-darwin.tar.gz       — Apple Silicon macOS CLI (no suffix: see matrix)
 #   7. crypto_vote-wasm-browser.tar.gz              — wasm-pack bundle for browsers (wasm-bindgen,
 #                                                     --target web: native ESM, no bundler needed).
 #                                                     This is also the exact package published to
@@ -47,8 +52,19 @@
 #                                                     crates.io from `[package] version` — which is
 #                                                     what the `preflight` job exists to reconcile.
 #
-# Note on item 4: `wasm64-unknown-unknown` is a Tier 3 target requiring
-# nightly Rust, and several transitive dependencies (notably
+# Note on the `-dynamic` glibc artefacts (items 1, 3, 5): these are
+# dynamically linked against the glibc of the build runner
+# (`ubuntu-latest`). glibc is forward-compatible but not backward-
+# compatible, so a binary built here runs only on a host whose glibc is
+# at least as new as the runner's; on an older distro the dynamic loader
+# fails before main() with `version 'GLIBC_2.xx' not found`. Because
+# `ubuntu-latest` is a moving tag, that minimum silently rises whenever
+# GitHub bumps the runner. Anyone on an old, unknown, or non-glibc distro
+# (Alpine, RHEL/CentOS, scratch containers, …) should use the `-static`
+# musl artefacts (items 2, 4), which embed their libc and run anywhere.
+#
+# Note on item 4 (wasm): `wasm64-unknown-unknown` is a Tier 3 target
+# requiring nightly Rust, and several transitive dependencies (notably
 # `curve25519-dalek` and `rand`) do not currently advertise wasm64
 # support. We therefore ship `wasm32-wasip1` as the documented fallback,
 # matching the user's "ou wasm32 si les dépendances ne le gèrent pas".
@@ -141,10 +157,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # --- Linux glibc ---
+          # --- Linux glibc (dynamically linked against the host's
+          # glibc; the `-dynamic` suffix on the artefact name makes that
+          # explicit). glibc is forward- but not backward-compatible, so
+          # these binaries require a glibc *at least* as new as the build
+          # runner's (ubuntu-latest). On an older distro the loader aborts
+          # before main() with `version 'GLIBC_2.xx' not found`. Users on
+          # old or unknown distros should prefer the `-static` musl
+          # artefacts below, which carry no libc dependency at all. ---
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             apt: ""
+            suffix: "-dynamic"
           - target: aarch64-unknown-linux-gnu
             # ARMv9-A cores (Cortex-A510, A710, A720, X1+ …) are 64-bit
             # ARM and use the `aarch64` ISA, so this triple covers
@@ -154,12 +178,18 @@ jobs:
             # cross-compiler — no QEMU, no `cross`.
             os: ubuntu-latest
             apt: "gcc-aarch64-linux-gnu"
-          # --- Linux musl (fully static, runs on any distro) ---
+            suffix: "-dynamic"
+          # --- Linux musl (fully static, runs on any distro regardless
+          # of its libc or glibc version; the `-static` suffix makes that
+          # explicit). Slightly larger than the glibc build because a copy
+          # of musl libc is baked into the executable, which is the price
+          # of having zero runtime dependency. ---
           - target: x86_64-unknown-linux-musl
             # `musl-tools` provides `musl-gcc`, which Cargo picks up
             # automatically for the *-linux-musl host triple.
             os: ubuntu-latest
             apt: "musl-tools"
+            suffix: "-static"
           - target: aarch64-unknown-linux-musl
             # No apt cross-toolchain needed: `rust-lld` (bundled with
             # rustup) handles cross-arch linking, and rustup ships a
@@ -167,13 +197,17 @@ jobs:
             # below selects rust-lld for this triple specifically.
             os: ubuntu-latest
             apt: ""
-          # --- RISC-V 64 Linux (glibc only — see file header for why) ---
+            suffix: "-static"
+          # --- RISC-V 64 Linux (glibc only — see file header for why).
+          # Dynamically linked like the other glibc rows, hence the same
+          # `-dynamic` suffix and the same minimum-glibc caveat. ---
           - target: riscv64gc-unknown-linux-gnu
             # Tier 2 with host tools. Same pattern as aarch64-gnu: an apt
             # cross-toolchain provides the linker driver (`riscv64-linux-
             # gnu-gcc`) plus the matching crt and libc. No QEMU needed.
             os: ubuntu-latest
             apt: "gcc-riscv64-linux-gnu"
+            suffix: "-dynamic"
           # --- Apple Silicon macOS ---
           - target: aarch64-apple-darwin
             # macos-latest is Apple Silicon (M-series), so this build is
@@ -181,8 +215,13 @@ jobs:
             # the linker. Intel macs (`x86_64-apple-darwin`) are not
             # shipped: GitHub-hosted Intel macOS runners were retired and
             # this project has no demand for a Rosetta-only artefact.
+            # No `-static`/`-dynamic` suffix: macOS always links libSystem
+            # dynamically (there is no supported static libc on Darwin)
+            # and its system-library ABI is stable, so the glibc-style
+            # portability caveat does not apply.
             os: macos-latest
             apt: ""
+            suffix: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -219,7 +258,7 @@ jobs:
       - name: Package binary
         id: pkg
         run: |
-          STAGING="cryptovote-${{ matrix.target }}"
+          STAGING="cryptovote-${{ matrix.target }}${{ matrix.suffix }}"
           mkdir "$STAGING"
           cp target/${{ matrix.target }}/release/cryptovote "$STAGING/"
           cp README.md "$STAGING/" 2>/dev/null || true
@@ -230,10 +269,10 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: cryptovote-${{ matrix.target }}
+          name: cryptovote-${{ matrix.target }}${{ matrix.suffix }}
           path: |
-            cryptovote-${{ matrix.target }}.tar.gz
-            cryptovote-${{ matrix.target }}.tar.gz.sha256
+            cryptovote-${{ matrix.target }}${{ matrix.suffix }}.tar.gz
+            cryptovote-${{ matrix.target }}${{ matrix.suffix }}.tar.gz.sha256
           if-no-files-found: error
 
   build-wasm-browser:

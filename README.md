@@ -359,14 +359,27 @@ implies Rust ≥ 1.85; CI tracks `stable`.
 
 | Triple — flavour | Build host | One-off setup | Output |
 |---|---|---|---|
-| `x86_64-unknown-linux-gnu` | Linux x64 | system C linker (any dev box has one) | dynamic ELF, ~700 KB |
-| `x86_64-unknown-linux-musl` | Linux x64 | `musl-tools` (provides `musl-gcc`) | **static ELF**, ~800 KB |
-| `aarch64-unknown-linux-gnu` | Linux x64 or arm | `gcc-aarch64-linux-gnu` cross-toolchain | dynamic ELF |
-| `aarch64-unknown-linux-musl` | Linux x64 or arm | none — uses `rust-lld` | **static ELF** |
-| `riscv64gc-unknown-linux-gnu` | Linux x64 or arm | `gcc-riscv64-linux-gnu` cross-toolchain | dynamic ELF |
+| `x86_64-unknown-linux-gnu` | Linux x64 | system C linker (any dev box has one) | **dynamic** ELF (glibc), ~700 KB — needs host glibc ≥ build runner's |
+| `x86_64-unknown-linux-musl` | Linux x64 | `musl-tools` (provides `musl-gcc`) | **static** ELF (musl), ~800 KB — runs on any distro |
+| `aarch64-unknown-linux-gnu` | Linux x64 or arm | `gcc-aarch64-linux-gnu` cross-toolchain | **dynamic** ELF (glibc) — needs host glibc ≥ build runner's |
+| `aarch64-unknown-linux-musl` | Linux x64 or arm | none — uses `rust-lld` | **static** ELF (musl) — runs on any distro |
+| `riscv64gc-unknown-linux-gnu` | Linux x64 or arm | `gcc-riscv64-linux-gnu` cross-toolchain | **dynamic** ELF (glibc) — needs host glibc ≥ build runner's |
 | `aarch64-apple-darwin` | macOS arm (M-series) | Xcode Command Line Tools | Mach-O |
 | `wasm32-unknown-unknown` — wasm-bindgen | any | `cargo install wasm-pack` | ES-module bundle for browsers |
 | `wasm32-wasip1` — **Extism plugin** | any | none — uses `rust-lld` | single `.wasm` for every Extism host SDK |
+
+> **Which Linux download do I pick?** The released archives make the
+> linking model explicit in their name: `…-linux-gnu-dynamic.tar.gz` is
+> glibc-linked, `…-linux-musl-static.tar.gz` is fully static. glibc is
+> forward- but not backward-compatible, so a `-dynamic` binary runs only
+> where the glibc is **at least as new** as the runner that built it
+> (`ubuntu-latest`); on an older distro the loader aborts with
+> `version 'GLIBC_2.xx' not found`. The glibc floor is set by the Rust
+> standard library and the build runner — not by this crate's code — and
+> rises whenever `ubuntu-latest` is bumped. When in doubt, or on an old,
+> unknown, or non-glibc distro (Alpine, RHEL/CentOS, `scratch`
+> containers, …), pick the **`-static` musl** archive: it embeds its libc
+> and runs anywhere, at the cost of being slightly larger.
 
 > Install commands below are **Debian/Ubuntu** (`apt`); adapt to your
 > distribution (`dnf`, `pacman`, `zypper`, `brew`, …) or use

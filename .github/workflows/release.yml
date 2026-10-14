@@ -66,8 +66,7 @@
 # Note on item 4 (wasm): `wasm64-unknown-unknown` is a Tier 3 target
 # requiring nightly Rust, and several transitive dependencies (notably
 # `curve25519-dalek` and `rand`) do not currently advertise wasm64
-# support. We therefore ship `wasm32-wasip1` as the documented fallback,
-# matching the user's "ou wasm32 si les dépendances ne le gèrent pas".
+# support. We therefore ship `wasm32-wasip1` as the documented fallback.
 #
 # Action pinning: every `uses:` here is pinned to a full-length commit SHA
 # with the tag in a trailing comment, and Dependabot keeps them current.

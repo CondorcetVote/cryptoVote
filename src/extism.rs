@@ -69,18 +69,50 @@
 //! ### Memory hygiene caveat
 //!
 //! Going through JSON means the secret key transits as a (prefixed)
-//! string in the plugin's input buffer. Unlike [`crate::wasm`], the host cannot
-//! call `.fill(0)` on it after the call returns — it lives wherever
-//! the host SDK stored the JSON. If you care about wiping the
-//! in-memory copy of the secret on the JS side, the `wasm-bindgen`
-//! flavour (`crate::wasm`) is the right artefact: it exposes the
-//! secret as a mutable `Uint8Array`. The Extism flavour optimises for
-//! *portability across host languages* instead.
+//! string inside a JSON document. On the guest side every copy we own
+//! is wiped: the entry points that accept a `secret` field read the raw
+//! input through [`read_secret_input`], which keeps the whole JSON
+//! buffer in `Zeroizing` while it is parsed, and the parsed secret
+//! `String` is wrapped in `Zeroizing` too. What we cannot wipe is the
+//! copy the Extism runtime holds in its own *kernel* memory: the PDK
+//! only exposes read access to the input region, so it lingers there
+//! until the next call overwrites it or the plugin instance is dropped.
+//! Hosts that care should use a plugin instance per secret-handling
+//! call and drop it right after.
+//!
+//! On the host side the secret lives wherever the SDK stored the JSON
+//! string. Unlike [`crate::wasm`], a JS host cannot call `.fill(0)` on
+//! it after the call returns. If you care about wiping the in-memory
+//! copy of the secret on the JS side, the `wasm-bindgen` flavour
+//! (`crate::wasm`) is the right artefact: it exposes the secret as a
+//! mutable `Uint8Array`. The Extism flavour optimises for *portability
+//! across host languages* instead.
 
 use crate::types::{KeyImage, Nonce, OwnershipProof, PublicKey, SecretKey, Signature};
 use extism_pdk::{FnResult, Json, plugin_fn};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
+
+/// Read the plugin input as JSON while keeping the raw buffer wipeable.
+///
+/// `#[plugin_fn]` with a `Json<T>` argument copies the input into a plain
+/// `Vec<u8>` and drops it *unwiped* once parsed. For inputs that carry a
+/// secret key that leaves the whole JSON document, secret included, in
+/// freed guest memory. This helper does the same read by hand with the
+/// raw bytes wrapped in `Zeroizing`, so they are overwritten as soon as
+/// parsing is done. The parsed `secret` field lands in its own `String`
+/// which each caller wraps in `Zeroizing` as well. (serde_json only
+/// uses an internal scratch buffer for strings containing escapes,
+/// which a prefixed `sk_…` value never does.)
+///
+/// Every entry point that accepts a `secret` field goes through this
+/// instead of a `Json<T>` argument. The two are wire-compatible: the
+/// host sends exactly the same JSON either way.
+fn read_secret_input<T: DeserializeOwned>() -> FnResult<T> {
+    let raw = Zeroizing::new(extism_pdk::input_bytes());
+    Ok(extism_pdk::json::from_slice(&raw)?)
+}
 
 // The plugin speaks the prefixed format (`pk_…_…`, `sk_…_…`, `blsag_…_…`,
 // `ki_…_…`) *exclusively*: every key / signature field is emitted in it
@@ -125,10 +157,12 @@ pub struct DerivePublicOut {
 /// Useful when a caller has stored the secret key but needs to recover
 /// or re-display the corresponding public key.
 ///
-/// The secret is wrapped in `Zeroizing` so its Rust-side heap allocation
-/// is overwritten before this function returns.
+/// The raw JSON input and the parsed secret are both wrapped in
+/// `Zeroizing` so every guest-side copy is overwritten before this
+/// function returns (see [`read_secret_input`]).
 #[plugin_fn]
-pub fn derive_public_key(Json(input): Json<DerivePublicIn>) -> FnResult<Json<DerivePublicOut>> {
+pub fn derive_public_key() -> FnResult<Json<DerivePublicOut>> {
+    let input: DerivePublicIn = read_secret_input()?;
     let secret = Zeroizing::new(input.secret);
     let sk = SecretKey::from_prefixed(&secret)?;
     Ok(Json(DerivePublicOut {
@@ -158,7 +192,8 @@ pub struct SignOut {
 /// string's bytes are the ballot — no decoding. See [`sign_vote_hex`]
 /// for arbitrary binary ballots.
 #[plugin_fn]
-pub fn sign_vote_str(Json(input): Json<SignIn>) -> FnResult<Json<SignOut>> {
+pub fn sign_vote_str() -> FnResult<Json<SignOut>> {
+    let input: SignIn = read_secret_input()?;
     let vote_bytes = input.vote.into_bytes();
     sign_with_bytes(input.secret, &vote_bytes, &input.election_id, &input.ring)
 }
@@ -167,7 +202,8 @@ pub fn sign_vote_str(Json(input): Json<SignIn>) -> FnResult<Json<SignOut>> {
 /// raw bytes before hashing, so any binary payload works. See
 /// [`sign_vote_str`] for text ballots.
 #[plugin_fn]
-pub fn sign_vote_hex(Json(input): Json<SignIn>) -> FnResult<Json<SignOut>> {
+pub fn sign_vote_hex() -> FnResult<Json<SignOut>> {
+    let input: SignIn = read_secret_input()?;
     let vote_bytes = hex::decode(&input.vote)?;
     sign_with_bytes(input.secret, &vote_bytes, &input.election_id, &input.ring)
 }
@@ -180,11 +216,11 @@ fn sign_with_bytes(
     election_id: &str,
     ring: &[String],
 ) -> FnResult<Json<SignOut>> {
-    // Wrap the secret hex String in `Zeroizing` so its heap allocation
-    // is overwritten when this function returns. This is the most we can
-    // clean up from inside the plugin — the JSON parser's intermediate
-    // buffers and the Extism PDK's input buffer in WASM linear memory
-    // are not under our control. The other inputs are public.
+    // Wrap the secret String in `Zeroizing` so its heap allocation is
+    // overwritten when this function returns. Together with the
+    // `Zeroizing` raw-input buffer in `read_secret_input`, this covers
+    // every guest-side copy; only the Extism kernel's copy is out of our
+    // reach (see the module docs). The other inputs are public.
     let secret = Zeroizing::new(secret);
     let sk = SecretKey::from_prefixed(&secret)?;
     let ring: Vec<PublicKey> = ring
@@ -258,12 +294,10 @@ pub struct IsValidSecretOut {
 /// error — so the host's flow is the same regardless of who sent the
 /// bytes.
 #[plugin_fn]
-pub fn is_valid_secret_key(Json(input): Json<IsValidSecretIn>) -> FnResult<Json<IsValidSecretOut>> {
-    // Same memory-hygiene caveat as `sign_with_bytes`: we wrap the
-    // Rust-side copy of the secret in `Zeroizing` so its heap allocation is
-    // overwritten before this function returns. The JSON parser's
-    // intermediate buffers and the Extism input buffer in WASM linear
-    // memory are not under our control — see the module docs.
+pub fn is_valid_secret_key() -> FnResult<Json<IsValidSecretOut>> {
+    // Same memory hygiene as `sign_with_bytes`: raw input and parsed
+    // secret are both `Zeroizing`-wrapped — see the module docs.
+    let input: IsValidSecretIn = read_secret_input()?;
     let secret = Zeroizing::new(input.secret);
     Ok(Json(IsValidSecretOut {
         valid: SecretKey::is_valid_prefixed(&secret),
@@ -305,12 +339,13 @@ pub struct ProveOwnershipOut {
 }
 
 /// Operation D (prover side): prove ownership of a key image. See
-/// [`crate::prove_ownership`]. The secret is wrapped in `Zeroizing` so its
-/// Rust-side heap copy is overwritten before this returns; the JSON
-/// parser's and Extism PDK's buffers are not under our control (see the
-/// module docs).
+/// [`crate::prove_ownership`]. The raw JSON input and the parsed secret
+/// are both wrapped in `Zeroizing` so every guest-side copy is
+/// overwritten before this returns; only the Extism kernel's copy is out
+/// of our reach (see the module docs).
 #[plugin_fn]
-pub fn prove_ownership(Json(input): Json<ProveOwnershipIn>) -> FnResult<Json<ProveOwnershipOut>> {
+pub fn prove_ownership() -> FnResult<Json<ProveOwnershipOut>> {
+    let input: ProveOwnershipIn = read_secret_input()?;
     let secret = Zeroizing::new(input.secret);
     let sk = SecretKey::from_prefixed(&secret)?;
     let nonce = Nonce::from_prefixed(&input.nonce)?;

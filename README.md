@@ -1162,28 +1162,34 @@ right default.
 ### Secret-hygiene trade-off vs wasm-bindgen
 
 Going through JSON means the secret key transits as a (prefixed) string
-in the plugin's input/output buffer. Three protections that the
-wasm-bindgen flavour provides are weakened or lost:
+inside a JSON document. Here is where each copy lives and who can wipe
+it:
 
-- The **Rust-side intermediate `String`** holding the parsed secret
-  *is* wrapped in `Zeroizing` (its heap allocation is overwritten when
-  the sign call returns). However the JSON parser's internal buffers and
-  the Extism PDK's input buffer in WASM linear memory are not under
-  our control.
-- The **JS-side `String`** holding the secret is **immutable** — the
-  host cannot call `.fill(0)` on it. It lives until V8 garbage-collects
-  it (no guaranteed timing).
-- The **Extism input/output buffers** in WASM linear memory may
-  persist between plugin calls (Extism re-uses the instance), so the
-  secret bytes can linger across calls until a future allocation
-  overwrites the region.
+- **Guest side (inside the plugin): wiped.** Every entry point that
+  accepts a `secret` field (`derive_public_key`, `sign_vote_*`,
+  `is_valid_secret_key`, `prove_ownership`) reads the raw JSON input
+  into a `Zeroizing` buffer and wraps the parsed secret `String` in
+  `Zeroizing` too, so both are overwritten when the call returns.
+- **Extism kernel memory: not wipeable from the guest.** The runtime
+  copies the host's input into its own kernel memory and the PDK only
+  exposes read access to it, so the secret lingers there until the next
+  call overwrites it or the plugin instance is dropped. If this matters
+  to you, use one plugin instance per secret-handling call and drop it
+  right after (keep the *compiled* module around; only re-instantiate).
+- **Host side: your responsibility, and harder than with wasm-bindgen.**
+  The secret sits in whatever string your host built the JSON from, plus
+  the JSON string itself. A JS `String` is **immutable** — the host
+  cannot `.fill(0)` it — and lives until the garbage collector reclaims
+  it. Hosts with explicit wiping (e.g. PHP's `sodium_memzero`) must wipe
+  *both* the raw secret and the encoded JSON input.
 
 Net effect: the Extism flavour reduces *post-hoc* memory hygiene
 (core dumps, devtools snapshots taken later, swap to disk, periodic
-memory scans). It does **not** change the *live* attack surface — a
-script running in the same context while the secret is in memory can
-read it under both flavours. If your threat model prioritises the
-post-hoc class, sign on a voter device with the wasm-bindgen flavour.
+memory scans) because of the host-side and kernel-memory copies. It
+does **not** change the *live* attack surface — a script running in the
+same context while the secret is in memory can read it under both
+flavours. If your threat model prioritises the post-hoc class, sign on
+a voter device with the wasm-bindgen flavour.
 
 ### Plugin function signatures
 
@@ -1230,8 +1236,9 @@ useful when a caller has persisted only the secret and needs to recover the
 corresponding ring entry. Input: `{"secret": <sk>}` (prefixed `sk_…`).
 Output: `{"public": <pk>}` (prefixed). Errors (bad prefix, bad checksum,
 bad hex, wrong length, zero scalar) are returned as plugin-level errors.
-The Rust-side copy of the secret is wrapped in `Zeroizing`; the same
-JSON-buffer caveat as `sign_vote_*` applies.
+The raw JSON input and the parsed secret are both wrapped in
+`Zeroizing`; the same host-side and kernel-memory caveats as
+`sign_vote_*` apply.
 
 ```bash
 extism call crypto_vote-extism.wasm derive_public_key \
@@ -1242,10 +1249,11 @@ extism call crypto_vote-extism.wasm derive_public_key \
 `is_valid_secret_key` is a pure utility that mirrors
 `SecretKey::is_valid_prefixed`: it returns `{"valid": false}` (never an
 error) for malformed input — bad prefix/checksum, bad hex, wrong length,
-non-canonical encoding, or the zero scalar. The Rust-side copy of the secret is
-wrapped in `Zeroizing`, but the same JSON-buffer caveat as the
+non-canonical encoding, or the zero scalar. The raw JSON input and the
+parsed secret are both wrapped in `Zeroizing`, but the same host-side
+caveats as the
 [`sign_vote_*`](#secret-hygiene-trade-off-vs-wasm-bindgen) functions
-applies; for secret-handling on a voter device, prefer the wasm-bindgen
+apply; for secret-handling on a voter device, prefer the wasm-bindgen
 flavour.
 
 ### Browser example

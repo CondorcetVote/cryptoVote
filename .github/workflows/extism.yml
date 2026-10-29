@@ -1,0 +1,87 @@
+# Extism plugin — lint and end-to-end test of the `extism` feature.
+#
+# Kept apart from `ci.yml` on purpose. The main CI job covers what
+# `cargo test` can reach: the Rust API, the CLI, and a clippy pass on the
+# wasm-bindgen feature. The Extism layer (`src/extism.rs`) is different:
+# the PDK links against imports the *host* provides, so it can be
+# type-checked on `wasm32-wasip1` but never executed under `cargo test`
+# on a native target. The only way to exercise it is to build the real
+# `.wasm` artefact and drive it from an Extism host SDK, which is what
+# `tests/extism/e2e.mjs` does with the official JavaScript SDK under
+# Node. That needs a Node toolchain and an npm install, which is why it
+# lives in its own workflow rather than bloating the Rust-only jobs.
+#
+# Pinning, `persist-credentials: false` and `permissions` follow the same
+# rules as `ci.yml`; see the comments at the top of that file.
+
+name: Extism
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: extism-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  extism:
+    name: Extism plugin (clippy + end-to-end)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain (wasm32-wasip1 + clippy)
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # v1
+        with:
+          toolchain: stable
+          components: clippy
+          targets: wasm32-wasip1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: wasm32-wasip1-extism
+
+      - name: clippy — Extism feature
+        # The `extism` feature is a separate code path from the default
+        # and `wasm` builds (its own entry points and input handling), so
+        # it gets the same `-D warnings` scrutiny as the other two in
+        # `ci.yml`. Targeting wasm32-wasip1 because that is the only
+        # target the PDK's host imports resolve on.
+        run: cargo clippy --no-default-features --features extism --target wasm32-wasip1 --lib -- -D warnings
+
+      - name: Build Extism plugin
+        # Same invocation as the release workflow, minus the
+        # reproducibility wrapper: here the bytes only need to be the ones
+        # the test loads, not the ones that get published.
+        run: cargo build --profile wasm-release --locked --target wasm32-wasip1 --lib --no-default-features --features extism
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tests/extism/package-lock.json
+
+      - name: Install the Extism JavaScript host SDK
+        # `npm ci` installs exactly what `package-lock.json` resolves,
+        # so the SDK version under test is the one checked in.
+        working-directory: tests/extism
+        run: npm ci
+
+      - name: Run end-to-end test
+        # Loads `target/wasm32-wasip1/wasm-release/crypto_vote.wasm` into
+        # the SDK and calls every exported plugin function over the JSON
+        # wire, including the documented error paths.
+        working-directory: tests/extism
+        run: npm test

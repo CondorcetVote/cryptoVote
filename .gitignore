@@ -30,5 +30,8 @@ tarpaulin-report.html
 # Generated documentation
 /doc/
 
+# Node packages (tests/extism end-to-end harness)
+node_modules/
+
 # Temp
 /tmp

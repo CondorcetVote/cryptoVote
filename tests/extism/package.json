@@ -1,0 +1,12 @@
+{
+  "name": "crypto-vote-extism-e2e",
+  "private": true,
+  "description": "End-to-end test of the crypto_vote Extism plugin through a real Extism host SDK",
+  "type": "module",
+  "scripts": {
+    "test": "node --no-warnings e2e.mjs"
+  },
+  "devDependencies": {
+    "@extism/extism": "2.0.0-rc13"
+  }
+}

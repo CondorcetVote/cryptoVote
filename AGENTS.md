@@ -58,7 +58,13 @@ cargo fmt --all -- --check                     # formatting — must produce no 
 cargo clippy --all-targets -- -D warnings      # lint, default features
 cargo clippy --no-default-features --features wasm \
     --target wasm32-unknown-unknown --lib -- -D warnings   # lint, WASM feature
+cargo clippy --no-default-features --features extism \
+    --target wasm32-wasip1 --lib -- -D warnings            # lint, Extism feature
 ```
 
-These are the exact commands the CI lint job runs. All must pass before
+These are the exact commands the CI lint jobs run. All must pass before
 marking work as done.
+
+The Extism layer cannot be exercised by `cargo test`. After touching `src/extism.rs`, build the
+plugin and run the end-to-end harness in `tests/extism/` (see the README "Tests" section). Any
+new Extism entry point gets a check in `tests/extism/e2e.mjs`.

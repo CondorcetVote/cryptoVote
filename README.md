@@ -1370,6 +1370,22 @@ malformed inputs). `tests/upgrade_vectors.rs` freezes a signature, a key
 image, a ring digest and every prefixed encoding so a protocol drift is
 caught before release.
 
+### Extism plugin end-to-end test
+
+The Extism layer cannot run under `cargo test`: the PDK links against
+imports only an Extism host provides. `tests/extism/e2e.mjs` loads the
+built `.wasm` into the official JavaScript host SDK under Node and calls
+every exported plugin function over the JSON wire, including the
+documented error paths. A separate `Extism` workflow runs it (plus
+clippy on the `extism` feature) on every push and pull request.
+
+```bash
+rustup target add wasm32-wasip1                      # one-off
+cargo build --profile wasm-release --target wasm32-wasip1 --lib \
+    --no-default-features --features extism
+cd tests/extism && npm ci && npm test                # Node 24+, not bun
+```
+
 ### Linting
 
 Three commands mirror the CI lint job exactly — run them before pushing:
@@ -1386,6 +1402,11 @@ cargo clippy --all-targets -- -D warnings
 #    rustup target add wasm32-unknown-unknown
 cargo clippy --no-default-features --features wasm \
     --target wasm32-unknown-unknown --lib -- -D warnings
+
+# 4. Clippy — Extism feature (run by the separate `Extism` workflow).
+#    Requires: rustup target add wasm32-wasip1
+cargo clippy --no-default-features --features extism \
+    --target wasm32-wasip1 --lib -- -D warnings
 ```
 
 To auto-fix formatting instead of just checking: `cargo fmt --all`.
@@ -1421,7 +1442,8 @@ src/
 └── main.rs           — CLI binary
 tests/
 ├── integration.rs    — public-API round-trips, malleability, negative paths
-└── upgrade_vectors.rs — frozen test vectors (protocol-drift tripwires)
+├── upgrade_vectors.rs — frozen test vectors (protocol-drift tripwires)
+└── extism/           — end-to-end test of the Extism plugin via the JS host SDK
 fuzz/
 ├── Cargo.toml        — separate package, excluded from the workspace
 └── fuzz_targets/     — four cargo-fuzz harnesses (see "Fuzzing")

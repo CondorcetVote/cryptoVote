@@ -1,6 +1,6 @@
 # Dependabot — automated dependency update pull requests.
 #
-# Three ecosystems are watched, one `updates` entry each:
+# Four ecosystems are watched, one `updates` entry each:
 #
 #   1. cargo, `/`      — the crate itself (`Cargo.toml` + `Cargo.lock`).
 #   2. cargo, `/fuzz`  — the fuzzing harness. It is a *separate* cargo
@@ -13,6 +13,8 @@
 #                        Kept current so the release pipeline does not rot
 #                        on deprecated action majors (the artifact actions
 #                        in particular hard-fail once retired).
+#   4. npm, `/tests/extism` — the Extism JavaScript host SDK used by the
+#                        end-to-end plugin test (`extism.yml`).
 #
 # This entry is what makes SHA pinning sustainable. Every `uses:` in the
 # workflows is pinned to a full-length commit SHA with the tag in a
@@ -73,6 +75,20 @@ updates:
       interval: monthly
     # Only `libfuzzer-sys` and the path dependency on the parent crate
     # live here; a single slot is plenty.
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # --- The Extism end-to-end harness ---
+  #
+  # A single dev-dependency (`@extism/extism`). A bump here is worth a
+  # look on its own: the SDK is what loads the plugin in the test, so a
+  # behaviour change on its side shows up as a red `Extism` workflow.
+  - package-ecosystem: npm
+    directory: "/tests/extism"
+    schedule:
+      interval: monthly
     open-pull-requests-limit: 1
     commit-message:
       prefix: chore
